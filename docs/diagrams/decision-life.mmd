@@ -1,0 +1,21 @@
+flowchart TB
+  subgraph WRITE[Writing an article]
+    direction LR
+    A1[A review report<br/>raises Q02] --> A2[You answer it]
+  end
+  subgraph PROPOSE[From answer to rule]
+    direction LR
+    B1[An agent calls<br/>propose_decision] --> B2[A pending candidate<br/>not yet a rule]
+    B2 --> B3[You adopt it<br/>in the editor]
+  end
+  subgraph REUSE[Next article]
+    direction LR
+    C1[Ledger holds<br/>D-...md] --> C2[get_context puts it<br/>in the next brief]
+    C2 --> C3[The draft starts<br/>with the rule]
+  end
+  WRITE --> PROPOSE
+  PROPOSE --> REUSE
+  C3 -->|the same finding comes back| D1[bragi recurrence counts<br/>articles it appears in]
+  D1 -.->|the reason is gone| D2[You retire it<br/>never handed out again]
+  classDef hot stroke:#c8401e,stroke-width:2px
+  class B3,C2 hot

@@ -1,0 +1,29 @@
+flowchart LR
+  subgraph WHO[Who acts]
+    direction TB
+    AG[Agent<br/>MCP client]
+    ME[You<br/>the author]
+  end
+  subgraph TOOLS[Bragi, on your machine]
+    direction TB
+    MCP[MCP server<br/>5 read tools<br/>and propose_decision]
+    CLI[bragi CLI<br/>read only]
+    ED[Local editor<br/>127.0.0.1 only]
+  end
+  subgraph FILES[Your folders, plain files]
+    direction TB
+    DR[Drafts<br/>one folder per article]
+    LE[Ledger<br/>one file per decision]
+    PP[Proposals<br/>one file per candidate]
+  end
+  AG --> MCP
+  ME --> ED
+  ME --> CLI
+  MCP -.->|reads| DR
+  MCP -.->|reads| LE
+  CLI -.->|reads| LE
+  MCP ==>|writes a candidate| PP
+  ED -.->|shows| PP
+  ED ==>|adopt: one new file<br/>retire: two lines| LE
+  classDef hot stroke:#c8401e,stroke-width:2px
+  class ED,LE hot

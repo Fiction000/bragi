@@ -1,0 +1,9 @@
+flowchart LR
+  W[writing<br/>none of the others] --> D[awaiting decision<br/>report says needs_input]
+  D --> C[awaiting confirm<br/>editor target without<br/>finished.json]
+  C --> G[gate and CI<br/>PR open, CI not green<br/>or no verdict for this head]
+  G --> M[merge ready<br/>CI green and MERGE_OK<br/>or NEEDS_WORD for this head]
+  M --> P[published<br/>a PR merged, none open]
+  C -.-> U[PR unknown<br/>every target finished,<br/>no PR found]
+  classDef hot stroke:#c8401e,stroke-width:2px
+  class C hot

@@ -19,6 +19,16 @@ An agent may read the ledger. An agent may propose a decision, and the proposal 
 
 Because a rule that outlives its reason does harm, a decision can be retired. Retiring edits two lines of one file (on the editor's ledger screen, `#/ledger`), and a retired decision is never handed to an agent.
 
+## How it works
+
+![Bragi's parts: an agent reaches the MCP server, you use the editor and the command line, and everything lands in plain folders. The only path into the ledger runs through the editor.](docs/diagrams/overview.svg)
+
+Dashed lines read; thick lines write. An agent can read drafts and the ledger and can write one thing: a candidate in the proposals folder. Only the editor writes to the ledger, and only when you press a button.
+
+One decision's life, from a review question to a rule that reaches the next article:
+
+<img src="docs/diagrams/decision-life.svg" width="420" alt="A review report raises a question and you answer it. An agent proposes the answer as a candidate. You adopt it in the editor, it becomes a ledger file, and get_context puts it into the next article's brief. If the same finding comes back, recurrence counts it; if the reason is gone, you retire it.">
+
 ## Status
 
 Published on GitHub. The packages are `private` on purpose: nothing here is meant for `npm publish`. Use it from a checkout.
@@ -134,6 +144,8 @@ drafts/
       05_final/editor/<id>/finished.json   # written by the editor when the author finishes
   drafts.index.yaml                # optional: articles that have no folder (see drafts.index.example.yaml)
 ```
+
+![The stages an article passes through, from writing to published. An article waiting for the author's confirmation is highlighted; one with every target finished but no PR found is shown as PR unknown.](docs/diagrams/stages.svg)
 
 The stage is derived from these files and never written by hand. The furthest progress wins, so an old `needs_input` report next to an editor run does not hold the article back.
 
@@ -263,6 +275,19 @@ Unknown ids come back as an error that lists the known ones. `stdout` carries on
 
 ## The editor
 
+The screens, from a made-up vault (the interface text is Japanese, as noted above). The list:
+
+![The list of drafts: five made-up articles with their medium, stage, who each waits on, open decisions and due date.](docs/images/list.png)
+
+An agent's candidates wait on their own screen until you adopt or reject them:
+
+![The candidates screen: two proposals from an agent, each with an adopt and a reject button.](docs/images/proposals.png)
+
+An adopted candidate becomes a ledger file; a decision you no longer want is retired, not deleted:
+
+![The ledger screen: three active decisions, one of them just adopted, and one retired decision shown greyed out.](docs/images/ledger.png)
+
+
 `npm start` serves the list at `/`; each article's manuscript opens at `/r/<key>/`. The server binds only to `127.0.0.1` (port 4317, or `--port`). Original files stay untouched: edits and reasons are stored under `05_final/editor/<id>/`, and finishing is an explicit action; autosave alone never marks a draft finished. A key is opaque and never a path; only runs the scanner found can be opened. `npm start -- --run <dir>` opens a single run.
 
 ### Behind Cloudflare Access
@@ -277,6 +302,8 @@ npm run typecheck
 npm run build
 npm run test:e2e    # needs Playwright's browsers; screenshots go to apps/editor/test-results/evidence (or $WLE_EVIDENCE_DIR)
 ```
+
+`docs/diagrams/*.mmd` are the sources of the SVG diagrams (Mermaid flowcharts, rendered with Pele). `node docs/make-screenshots.mjs` rebuilds `docs/images/*.png` from a made-up vault in a temp folder; it needs `npm run build` first and Playwright's browsers.
 
 The tests use only invented articles and decisions. Run them with the `BRAGI_*` variables unset: the suites that need a setting set it themselves.
 

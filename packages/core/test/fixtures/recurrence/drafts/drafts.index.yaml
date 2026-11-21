@@ -1,0 +1,7 @@
+drafts:
+  - slug: loose-sample
+    title: 合成データ：フォルダのない記事
+    medium: 解説記事
+    dir: ../loose
+    files:
+      - copy-review-report-loose.md

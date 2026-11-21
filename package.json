@@ -1,0 +1,21 @@
+{
+  "name": "writing-local-editor",
+  "description": "Bragi: a ledger of an author's decisions, a reader (CLI and MCP) for agents, and a local editor. Only a person turns a judgement into a rule.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "start": "npm start -w @wle/editor --",
+    "build": "npm run build -w @wle/editor",
+    "typecheck": "npm run typecheck -w @wle/core && npm run typecheck -w @wle/editor && npm run typecheck -w @wle/mcp",
+    "test": "npm test -w @wle/core && npm test -w @wle/editor && npm test -w @wle/mcp",
+    "test:e2e": "npm run test:e2e -w @wle/editor"
+  }
+}

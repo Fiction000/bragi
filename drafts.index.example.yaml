@@ -1,0 +1,16 @@
+# Put a copy at <drafts root>/drafts.index.yaml (or pass --drafts-index <file>) to list articles that have no folder
+# under the drafts root. Everything here is hand-written, so the list marks these rows 手で登録.
+drafts:
+  - slug: sample-note-20261106            # shown under the title; must not equal a folder name under the root
+    title: 週次ニュースレター改稿
+    medium: ニュースレター
+    dir: ..                               # where the files are, relative to this file
+    files:                                # relative to dir; reports decide the stage, any task id (see BRAGI_TASK_IDS) in them links task notes
+      - copy-review-report-sample-note-20261106.md
+      - 週次ニュースレター改稿 PR114 実行報告 2026-11-12.md
+      - sample-note-draft-diff-20261106.patch
+    repo: example-org/example-repo        # repository to look in
+    branch: content/sample-note-intro-20261106   # the article's PR branch (matched exactly)
+    pr:                                   # same record as article.yaml: numbers (with repo) or URLs
+      - https://github.com/example-org/example-repo/pull/114
+    # due: 2026-11-30                     # optional; otherwise the due date comes from the task note the files mention

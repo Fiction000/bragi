@@ -1,0 +1,6 @@
+{
+  "targets": [
+    {"id": "kawazoi", "title": "川沿いの帰り道", "medium": "エッセイ", "version": "第2稿", "source": "05_final/川沿いの帰り道 レビュー反映稿.md"},
+    {"id": "market-note", "title": "市場のひとこと", "medium": "解説記事", "version": "第1稿", "source": "05_final/市場のひとこと レビュー反映稿.md"}
+  ]
+}

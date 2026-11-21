@@ -1,0 +1,18 @@
+{
+  "r0": {
+    "list": { "nodes": [
+      { "number": 70, "title": "別の PR", "url": "https://github.com/example/site/pull/70", "state": "OPEN", "isDraft": false, "headRefName": "content/other", "headRefOid": "aaaaaaa1111111111111111111111111111111aa",
+        "commits": { "nodes": [{ "commit": { "oid": "aaaaaaa1", "statusCheckRollup": null } }] }, "comments": { "nodes": [] }, "reviewThreads": { "nodes": [] } }
+    ] },
+    "n61": { "number": 61, "title": "合成データ：ready", "url": "https://github.com/example/site/pull/61", "state": "OPEN", "isDraft": false, "headRefName": "content/ready", "headRefOid": "b2dc046a47817bf60e450a7be599c8db78dca9d8",
+      "commits": { "nodes": [{ "commit": { "oid": "b2dc046a47817bf60e450a7be599c8db78dca9d8", "statusCheckRollup": { "state": "SUCCESS", "contexts": { "nodes": [
+        { "__typename": "CheckRun", "name": "Check, test and build", "status": "COMPLETED", "conclusion": "SUCCESS" },
+        { "__typename": "CheckRun", "name": "Production smoke", "status": "COMPLETED", "conclusion": "SKIPPED" },
+        { "__typename": "StatusContext", "context": "Vercel", "state": "SUCCESS" } ] } } } }] },
+      "comments": { "nodes": [
+        { "body": "[vc]: #abc", "createdAt": "2026-11-14T03:00:00Z", "url": "https://example/c1" },
+        { "body": "pr_gate NEEDS_AUTHOR (content only: x.mdx), CI green, scan clean, head b2dc046a47817bf60e450a7be599c8db78dca9d8.", "createdAt": "2026-11-14T03:24:38Z", "url": "https://example/c2" },
+        { "body": "pr_gate BLOCKED (older run), CI red, head 1111111111111111111111111111111111111111.", "createdAt": "2026-11-13T03:24:38Z", "url": "https://example/c0" } ] },
+      "reviewThreads": { "nodes": [{ "isResolved": true }, { "isResolved": false }, { "isResolved": false }] } }
+  }
+}

@@ -1,0 +1,12 @@
+drafts:
+  - slug: loose-20261106
+    title: 合成データ：フォルダのない記事
+    medium: ニュースレター
+    dir: ../loose
+    files:
+      - copy-review-report-loose-20261106.md
+      - 実行報告 loose.md
+      - loose-draft-diff.patch
+    branch: content/loose-intro-20261106
+    repo: example/site
+    pr: [114]

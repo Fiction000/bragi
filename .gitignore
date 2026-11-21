@@ -1,0 +1,12 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+coverage/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+# your own settings: the committed example is bragi.config.example.json
+bragi.config.json

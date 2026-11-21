@@ -1,0 +1,13 @@
+{
+  "vault": "/path/to/your/vault",
+  "drafts": "blog/drafts",
+  "ledger": "blog/decisions",
+  "proposals": "blog/proposed",
+  "taskNotes": null,
+  "author": "Sam",
+  "taskIds": [],
+  "stageLabels": {
+    "writing": "Drafting",
+    "awaiting-decision": "{author} to decide"
+  }
+}

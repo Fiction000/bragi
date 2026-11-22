@@ -44,10 +44,15 @@ async function find(o: ServiceOptions, slug: string): Promise<Draft> {
 export const getDraft = (o: ServiceOptions, slug: string) => find(o, slug);
 
 export async function getContext(o: ServiceOptions, slug: string): Promise<string> {
+  return (await getContextWithMedium(o, slug)).text;
+}
+
+/** The context Markdown plus the medium it was built for (null: unknown), so a caller can warn without parsing the text. */
+export async function getContextWithMedium(o: ServiceOptions, slug: string): Promise<{ text: string; medium: string | null }> {
   const draft = await find(o, slug);
   const { decisions, problems } = await loadLedger(o.ledgerDir ?? defaultLedgerDir());
   const text = renderContext(decisions, { draft: draft.slug, medium: draft.medium });
-  return problems.length > 0 ? `${text}\n> 読めなかった台帳ファイル ${problems.length}件\n${problems.map((p) => `> - ${p.file}：${p.message}\n`).join('')}` : text;
+  return { medium: draft.medium, text: problems.length > 0 ? `${text}\n> 読めなかった台帳ファイル ${problems.length}件\n${problems.map((p) => `> - ${p.file}：${p.message}\n`).join('')}` : text };
 }
 
 /** Every copy-review report, parsed, with the ledger's decisions. Read-only. */

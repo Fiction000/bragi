@@ -4,6 +4,7 @@
 //   repo: example-org/example-repo
 //   branch: content/my-article-20261113
 //   pr: [115, 116]            # numbers (with repo) or full PR URLs
+//   medium: newsletter        # optional: the medium; used when no hand-registered entry or editor target names one
 import { promises as fs } from 'node:fs';
 import { parse } from 'yaml';
 import { z } from 'zod';
@@ -17,7 +18,8 @@ export const articleFieldsSchema = z.object({
   branch: z.string().min(1).optional(),
   pr: z.union([prRefSchema, z.array(prRefSchema)]).optional().transform((v) => (v === undefined ? [] : Array.isArray(v) ? v : [v])),
 });
-export const articleYamlSchema = articleFieldsSchema.strict();
+// `medium` lives only here: drafts.index.yaml has its own `medium` and spreads articleFieldsSchema into its entries.
+export const articleYamlSchema = articleFieldsSchema.extend({ medium: z.string().trim().min(1).optional() }).strict();
 export type ArticleRecord = { repo: string | null; branch: string | null; prs: PrRef[] };
 
 /** Resolve numbers against repo, URLs against themselves. Anything that cannot be resolved is reported, not guessed. */
@@ -39,7 +41,7 @@ export function resolveRecord(fields: z.output<typeof articleFieldsSchema>): { r
 
 export const hasRecord = (r: ArticleRecord) => r.prs.length > 0 || r.branch !== null;
 
-export async function readArticleYaml(file: string): Promise<{ record: ArticleRecord; problems: string[] } | null> {
+export async function readArticleYaml(file: string): Promise<{ record: ArticleRecord; medium: string | null; problems: string[] } | null> {
   let text: string;
   try {
     text = await fs.readFile(file, 'utf8');
@@ -47,9 +49,10 @@ export async function readArticleYaml(file: string): Promise<{ record: ArticleRe
     return null;
   }
   try {
-    return resolveRecord(articleYamlSchema.parse(parse(text) ?? {}));
+    const fields = articleYamlSchema.parse(parse(text) ?? {});
+    return { ...resolveRecord(fields), medium: fields.medium ?? null };
   } catch (e) {
-    return { record: { repo: null, branch: null, prs: [] }, problems: [`article.yaml を読めなかった（無視して推測に戻る）: ${String((e as Error).message).split('\n')[0].slice(0, 140)}`] };
+    return { record: { repo: null, branch: null, prs: [] }, medium: null, problems: [`article.yaml を読めなかった（無視して推測に戻る）: ${String((e as Error).message).split('\n')[0].slice(0, 140)}`] };
   }
 }
 

@@ -136,7 +136,7 @@ One folder directly under the drafts root is one article. The slug is the folder
 drafts/
   my-post-20261101/
     copy-review-report-1.md        # a review report (name rule below); its `status:` line (e.g. needs_input) drives the stage
-    article.yaml                   # optional: repo, branch, pr (the record of which PRs belong to it)
+    article.yaml                   # optional: repo, branch, pr (the record of which PRs belong to it), medium
     status.override.json           # optional: the only hand-set state
     editor-run/
       editor-targets.json          # the manuscripts the editor may open
@@ -180,6 +180,7 @@ More about the list:
     All PRs of all articles are read with one `gh api graphql` call (state, head SHA, CI, the gate comment, unresolved review threads), cached for 60 seconds.
   - Matching. `article.yaml` (`repo`, `branch`, `pr`) is the record and wins. Without it, PRs are guessed from report text or from a head branch that contains the folder name without its date, and every guess is marked 推測 (a guess). `--pr-repo owner/name` adds a repository to the branch search.
   - Without `gh`. If `gh` fails the list still shows, with PRs as 状態不明 (state unknown).
+- **Medium (媒体).** The first of these that names one: the article's entry in `drafts.index.yaml`; the `medium` of its `editor-targets.json`; a `medium:` line in `article.yaml` (for example `medium: newsletter`); a `媒体:` line in a review report. When none does, `bragi context <slug>` prints `媒体: （不明）` with no medium decisions and writes ``medium is unknown for <slug>: add `medium:` to article.yaml`` to stderr; stdout does not change.
 - **Open decisions (未決).** The questions of a `needs_input` report that holds the article at the decision step, plus the `〔<author>の…〕` and `〔要確認…〕` placeholders still in the manuscript. Structural markers such as `〔図1：キャプション〕` are not counted.
 - **Due date (期限).** `status.override.json`, then `drafts.index.yaml`, then the task note (see `BRAGI_TASKNOTES`) whose `key` or `kanban` id the article's files mention most, then a `due:` line in a brief. Finished task notes are ignored.
 - **`status.override.json`.** `{ "stage": "...", "waiting_on": "...", "due": "YYYY-MM-DD", "pr": "https://..." }`, all keys optional. `waiting_on` is `agent`, `author`, `ci` or `none`.

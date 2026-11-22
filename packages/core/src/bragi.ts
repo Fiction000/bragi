@@ -7,7 +7,7 @@
 // Options: --drafts-root <dir> --ledger <dir> --tasknotes <dir> --drafts-index <file> --github (ask GitHub; off by default) --json (candidates, recurrence)
 import { parseArgs } from 'node:util';
 import { createGhGraphql } from './github.ts';
-import { getCandidates, getContext, getRecurrence, listDrafts } from './service.ts';
+import { getCandidates, getContextWithMedium, getRecurrence, listDrafts } from './service.ts';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -17,7 +17,12 @@ const options = { draftsRoot: values['drafts-root'], ledgerDir: values.ledger, t
 const [command, arg] = positionals;
 
 try {
-  if (command === 'context' && arg) process.stdout.write(await getContext(options, arg));
+  if (command === 'context' && arg) {
+    const r = await getContextWithMedium(options, arg);
+    process.stdout.write(r.text);
+    // stderr only: stdout stays the Markdown a machine reads.
+    if (r.medium === null) process.stderr.write(`bragi: medium is unknown for ${arg}: add \`medium:\` to article.yaml\n`);
+  }
   else if (command === 'list') {
     for (const d of (await listDrafts(options)).drafts) process.stdout.write(`${d.slug}\t${d.medium ?? '-'}\t${d.stageLabel}\t${d.waitingOn}\t${d.due ?? '-'}\n`);
   } else if (command === 'candidates' && arg) {

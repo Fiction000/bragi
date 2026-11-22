@@ -116,6 +116,8 @@ type Material = {
   source: 'folder' | 'manual';
   title: string | null;
   medium: string | null;
+  /** The `medium` in article.yaml. Ranks below a hand-registered or editor-targets medium, above a report's 媒体 line. */
+  articleMedium: string | null;
   files: string[]; // absolute paths
   editorRuns: EditorRun[];
   override: Override | null;
@@ -167,7 +169,7 @@ async function folderMaterial(root: string, slug: string): Promise<Material> {
     const fromOverride = resolveRecord({ repo: record.repo ?? undefined, branch: record.branch ?? undefined, pr: [override.pr] }).record;
     record = { ...record, prs: [...record.prs, ...fromOverride.prs] };
   }
-  return { slug, dir, source: 'folder', title: null, medium: null, files: names.map((n) => path.join(dir, n)), editorRuns: await findEditorRuns(root, dir), override, record, dueFromIndex: null, warnings };
+  return { slug, dir, source: 'folder', title: null, medium: null, articleMedium: article?.medium ?? null, files: names.map((n) => path.join(dir, n)), editorRuns: await findEditorRuns(root, dir), override, record, dueFromIndex: null, warnings };
 }
 
 async function manualMaterial(entry: IndexEntry): Promise<Material> {
@@ -180,7 +182,7 @@ async function manualMaterial(entry: IndexEntry): Promise<Material> {
   }
   const { record, problems } = resolveRecord({ repo: entry.repo, branch: entry.branch, pr: entry.pr });
   warnings.push(...problems);
-  return { slug: entry.slug, dir: entry.dirAbs, source: 'manual', title: entry.title, medium: entry.medium ?? null, files, editorRuns: [], override: null, record, dueFromIndex: entry.due ?? null, warnings };
+  return { slug: entry.slug, dir: entry.dirAbs, source: 'manual', title: entry.title, medium: entry.medium ?? null, articleMedium: null, files, editorRuns: [], override: null, record, dueFromIndex: entry.due ?? null, warnings };
 }
 
 export type ScanOptions = {
@@ -290,7 +292,7 @@ export async function scanDrafts(rootInput: string, options: ScanOptions = {}): 
     drafts.push(draftSchema.parse({
       slug: m.slug,
       title: m.title ?? first?.title ?? m.slug,
-      medium: m.medium ?? first?.medium ?? ev.medium,
+      medium: m.medium ?? first?.medium ?? m.articleMedium ?? ev.medium,
       path: m.dir,
       stage: result.stage,
       stageLabel: labels[result.stage],

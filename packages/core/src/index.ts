@@ -14,3 +14,4 @@ export * from './reports.ts';
 export * from './candidates.ts';
 export * from './recurrence.ts';
 export * from './proposals.ts';
+export * from './edit-volume.ts';

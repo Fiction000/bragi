@@ -4,10 +4,12 @@
 //   bragi list              one line per article
 //   bragi candidates <slug> the questions in the article's copy-review reports, as candidate decisions (nothing is written)
 //   bragi recurrence [slug] how many articles each decision recurs in (with a slug: only decisions that article's findings fall under)
+//   bragi edit-volume <dir> how much the author changed each confirmed draft (a run folder, or a folder searched for finished.json). A record only: no comparison, no cause
 // Options: --drafts-root <dir> --ledger <dir> --tasknotes <dir> --drafts-index <file> --github (ask GitHub; off by default) --json (candidates, recurrence)
 import { parseArgs } from 'node:util';
 import { createGhGraphql } from './github.ts';
 import { getCandidates, getContextWithMedium, getRecurrence, listDrafts } from './service.ts';
+import { getEditVolume, renderEditVolume } from './edit-volume.ts';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -31,8 +33,11 @@ try {
   } else if (command === 'recurrence') {
     const r = await getRecurrence(options, arg);
     process.stdout.write(values.json ? `${JSON.stringify(r, null, 2)}\n` : r.text);
+  } else if (command === 'edit-volume' && arg) {
+    const r = await getEditVolume(arg);
+    process.stdout.write(values.json ? `${JSON.stringify(r, null, 2)}\n` : renderEditVolume(r));
   } else {
-    process.stderr.write('usage: bragi context <draft> | bragi list | bragi candidates <draft> | bragi recurrence [draft]  [--drafts-root dir] [--ledger dir] [--tasknotes dir] [--drafts-index file] [--github] [--json]\n');
+    process.stderr.write('usage: bragi context <draft> | bragi list | bragi candidates <draft> | bragi recurrence [draft] | bragi edit-volume <run-or-folder>  [--drafts-root dir] [--ledger dir] [--tasknotes dir] [--drafts-index file] [--github] [--json]\n');
     process.exitCode = command ? 2 : values.help ? 0 : 2;
   }
 } catch (e) {

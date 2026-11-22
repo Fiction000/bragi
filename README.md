@@ -252,6 +252,10 @@ A candidate is not a decision. There are two kinds.
 
 `bragi recurrence [slug]` counts in how many articles the findings of the review reports fall under each active decision, by fixed rules, tried in this order: the decision's id named in the finding, the decision's check regex, a phrase in 「」 brackets from the decision's text, a tag. No model is involved. The tags are six built-in topics (`unsourced-feeling-evaluation`, `superlative`, `translator-intent`, `reread-invite`, `edition-claim`, `secondary-source`), matched against the decision's text and the finding with Japanese patterns, defined in `packages/core/src/recurrence.ts`. A decision's `tags:` key is not used, and no setting adds a topic. A decision's own article is not counted: it is the one named by the decision's `draft` key, or else by the `drafts/<slug>/` part of its `source`.
 
+## Edit volume
+
+`bragi edit-volume <dir>` shows how much the author changed each confirmed draft: it compares the source file named in a run's `editor-targets.json` with the editor's `nat-final.md` and prints the sentences and characters of both, the number of sentences changed, and the characters added and removed (`--json` prints the same as JSON). Give it one run folder, or a folder to search; every run found under it is listed, a target with no `finished.json` shows as 未確定 (not confirmed), and a target whose source file is missing or was edited after confirming shows the reason and no numbers. The output is a record of the amount and does not say what caused it.
+
 ## MCP tools
 
 `node apps/mcp/src/server.ts`, over stdio. Flags: `--drafts-root --ledger --proposals --tasknotes --drafts-index --pr-repo --github`.

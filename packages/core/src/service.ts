@@ -9,6 +9,7 @@ import { countRecurrence, renderRecurrence } from './recurrence.ts';
 import { proposalsDirFor, proposeDecision, type ProposalInput } from './proposals.ts';
 import type { GithubClient } from './github.ts';
 import type { Draft } from './schema.ts';
+import { renderListLines } from './list.ts';
 
 export type ServiceOptions = {
   draftsRoot?: string;
@@ -28,6 +29,11 @@ const scan = (o: ServiceOptions) =>
 export async function listDrafts(o: ServiceOptions = {}) {
   const s = await scan(o);
   return { root: s.root, scannedAt: s.scannedAt, warnings: s.warnings, drafts: s.drafts.map((d) => ({ slug: d.slug, title: d.title, medium: d.medium, stage: d.stage, stageLabel: d.stageLabel, waitingOn: d.waitingOn, openDecisions: d.openDecisions, due: d.due, prs: d.prs.map((p) => ({ number: p.number, state: p.state, url: p.url })) })) };
+}
+
+/** The lines `bragi list` prints (tab-separated), plus notes for stderr. Read-only. */
+export async function listDraftLines(o: ServiceOptions = {}) {
+  return renderListLines(await scan(o));
 }
 
 export class UnknownDraft extends Error {

@@ -21,19 +21,22 @@ const ORDER = { author: 0, ci: 1, agent: 2, none: 3 } as const;
 export default function Dashboard() {
   const [scan, setScan] = useState<Scan>();
   const [error, setError] = useState('');
+  const [showPublished, setShowPublished] = useState(false);
   useEffect(() => {
     fetch('/api/dashboard').then(async r => { const body = await r.json(); if (!r.ok) throw new Error(body.error); return body; }).then(setScan).catch(e => setError(String(e.message ?? e)));
   }, []);
   if (error) return <main className="dash"><h1>下書きの一覧</h1><p role="alert" className="dash-error">一覧を読めませんでした：{error}</p></main>;
   if (!scan) return <main className="dash" aria-busy="true" />;
   const drafts = [...scan.drafts].sort((a, b) => ORDER[a.waitingOn] - ORDER[b.waitingOn] || a.title.localeCompare(b.title, 'ja'));
-  const waitingCount = drafts.filter(d => d.waitingOn === 'author').length;
+  const visibleDrafts = showPublished ? drafts : drafts.filter(d => d.stage !== 'published');
+  const waitingCount = visibleDrafts.filter(d => d.waitingOn === 'author').length;
   const waitLabel = waitingLabel(scan.author), gates = gateLabel(scan.author);
   return <main className="dash">
-    <header><h1>下書きの一覧</h1><p className="dash-meta">{drafts.length}本　{scan.author}待ち {waitingCount}本　読み取り専用　<a href="#/ledger">判断台帳</a></p></header>
+    <header><h1>下書きの一覧</h1><p className="dash-meta">{visibleDrafts.length}本　{scan.author}待ち {waitingCount}本　読み取り専用　<a href="#/ledger">判断台帳</a></p></header>
+    <label className="ledger-toggle"><input type="checkbox" checked={showPublished} onChange={e => setShowPublished(e.target.checked)} /> 公開済みも表示</label>
     <table>
       <thead><tr><th>題名</th><th>媒体</th><th>段階</th><th>待ち先</th><th className="num">未決</th><th>期限</th><th>PR</th><th><span className="sr-only">開く</span></th></tr></thead>
-      <tbody>{drafts.map(d => {
+      <tbody>{visibleDrafts.map(d => {
         const open = d.editorRuns.find(r => r.targets.some(t => !t.finished)) ?? d.editorRuns[0];
         return <tr key={d.slug} data-slug={d.slug} data-waiting={d.waitingOn} data-stage={d.stage}>
           <td className="title">{d.title}<small>{d.slug}</small>{d.warnings.length > 0 && <span className="warn" title={d.warnings.join('\n')}>要確認</span>}{d.source === 'manual' && <span className="tag" title="drafts.index.yaml に手で登録">手で登録</span>}</td>
@@ -54,7 +57,8 @@ export default function Dashboard() {
       })}</tbody>
     </table>
     {scan.warnings.length > 0 && <ul className="dash-warnings" role="status">{scan.warnings.map(w => <li key={w}>{w}</li>)}</ul>}
-    {drafts.length === 0 && <p className="dash-empty">{scan.root} に記事のフォルダがありません。</p>}
+    {scan.drafts.length === 0 && <p className="dash-empty">{scan.root} に記事のフォルダがありません。</p>}
+    {scan.drafts.length > 0 && visibleDrafts.length === 0 && <p className="dash-empty">未公開の下書きはありません。</p>}
     <footer>{scan.root}　／　{new Date(scan.scannedAt).toLocaleString('ja-JP')} に読み込み{scan.skippedFiles.length > 0 && `　／　フォルダでない単独ファイル ${scan.skippedFiles.length} 件は対象外`}</footer>
   </main>;
 }

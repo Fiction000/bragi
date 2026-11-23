@@ -30,7 +30,21 @@ test('20 the home screen is a read-only list, one row per article, and sends no 
   await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
   await expect(page.getByRole('columnheader')).toHaveText(['題名', '媒体', '段階', '待ち先', '未決', '期限', 'PR', '開く']);
   const rows = page.locator('tbody tr[data-slug]');
+  await expect(rows).toHaveCount(8);
+  const publishedToggle = page.getByLabel('公開済みも表示');
+  await expect(publishedToggle).not.toBeChecked();
+  await expect(stageRow(page, 'override-sample')).toHaveCount(0);
+  const initiallyVisible = await rows.evaluateAll(items => items.map(item => item.getAttribute('data-slug')));
+  await publishedToggle.check();
   await expect(rows).toHaveCount(9);
+  await expect(stageRow(page, 'override-sample')).toBeVisible();
+  const allSlugs = await rows.evaluateAll(items => items.map(item => item.getAttribute('data-slug')));
+  expect(allSlugs.filter(slug => slug !== 'override-sample')).toEqual(initiallyVisible);
+  await publishedToggle.uncheck();
+  await expect(rows).toHaveCount(8);
+  await expect(rows.evaluateAll(items => items.map(item => item.getAttribute('data-slug')))).resolves.toEqual(initiallyVisible);
+  await page.reload();
+  await expect(page.getByLabel('公開済みも表示')).not.toBeChecked();
   // The stages the files say, for the three kinds of synthetic run and the rest.
   const stage = (slug: string) => page.locator(`tr[data-slug="${slug}"]`);
   await expect(stage('writing-sample').locator('td').nth(2)).toHaveText('執筆中');
@@ -41,15 +55,48 @@ test('20 the home screen is a read-only list, one row per article, and sends no 
   await expect(stage('deciding-sample').locator('td').nth(5)).toHaveText('2026-12-05');
   await expect(stage('confirmed-sample').locator('td').nth(2)).toHaveText('PR不明');
   await expect(stage('pr-sample').locator('td').nth(2)).toHaveText('ゲート/CI');
+  await publishedToggle.check();
   await expect(stage('override-sample').locator('td').nth(2)).toContainText('公開済み');
   await expect(stage('override-sample').locator('td').nth(5)).toHaveText('2026-12-01');
+  await publishedToggle.uncheck();
   await expect(stage('pr-sample').getByRole('link', { name: /#7 open/ })).toHaveAttribute('href', 'https://github.com/example/site/pull/7');
   // 著者待ち is on top.
   await expect(rows.first()).toHaveAttribute('data-waiting', 'author');
   await page.waitForTimeout(500);
   expect(writes).toEqual([]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByLabel('公開済みも表示')).toBeVisible();
   await mkdir(EVIDENCE, { recursive: true });
+  await page.screenshot({ path: path.join(EVIDENCE, 'dashboard-synthetic-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 800 });
   await page.screenshot({ path: path.join(EVIDENCE, 'dashboard-synthetic.png'), fullPage: true });
+});
+
+test('20b empty states distinguish no drafts from all-published drafts', async ({ page }) => {
+  await page.route('**/api/dashboard', async route => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.drafts = data.drafts.filter((draft: { stage: string }) => draft.stage === 'published');
+    await route.fulfill({ response, json: data });
+  });
+  await page.goto(origin);
+  await expect(page.getByText('未公開の下書きはありません。')).toBeVisible();
+  await expect(page.getByText(/に記事のフォルダがありません。/)).toHaveCount(0);
+  const toggle = page.getByLabel('公開済みも表示');
+  await toggle.check();
+  await expect(page.locator('tbody tr[data-slug]')).toHaveCount(1);
+  await expect(page.getByText('未公開の下書きはありません。')).toHaveCount(0);
+
+  await page.unroute('**/api/dashboard');
+  await page.route('**/api/dashboard', async route => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.drafts = [];
+    await route.fulfill({ response, json: data });
+  });
+  await page.reload();
+  await expect(page.getByText(/に記事のフォルダがありません。/)).toBeVisible();
+  await expect(page.getByText('未公開の下書きはありません。')).toHaveCount(0);
 });
 
 test('21 開く opens the run in the existing editor under /r/<key>/, and 一覧へ comes back', async ({ page }) => {

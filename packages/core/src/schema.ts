@@ -115,5 +115,7 @@ export const scanResultSchema = z.object({
   skippedFiles: z.array(z.string()),
   /** Problems with the scan itself (an index file or a PR list that could not be read). The list still shows. */
   warnings: z.array(z.string()),
+  /** Did this scan read PR state from GitHub? off: GitHub was not asked. failed: it was asked and could not answer. ok: it answered (or there was nothing to look up). */
+  github: z.enum(['off', 'ok', 'failed']),
 });
 export type ScanResult = z.infer<typeof scanResultSchema>;

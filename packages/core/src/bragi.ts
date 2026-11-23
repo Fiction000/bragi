@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // bragi: read-only CLI over the ledger and the list.
 //   bragi context <draft>   Markdown of the decisions that apply to the article
-//   bragi list              one line per article
+//   bragi list              one line per article. A row that depends on a PR says GitHub未照合 without --github, 照合失敗 when --github fails
 //   bragi candidates <slug> the questions in the article's copy-review reports, as candidate decisions (nothing is written)
 //   bragi recurrence [slug] how many articles each decision recurs in (with a slug: only decisions that article's findings fall under)
 //   bragi edit-volume <dir> how much the author changed each confirmed draft (a run folder, or a folder searched for finished.json). A record only: no comparison, no cause
 // Options: --drafts-root <dir> --ledger <dir> --tasknotes <dir> --drafts-index <file> --github (ask GitHub; off by default) --json (candidates, recurrence)
 import { parseArgs } from 'node:util';
 import { createGhGraphql } from './github.ts';
-import { getCandidates, getContextWithMedium, getRecurrence, listDrafts } from './service.ts';
+import { getCandidates, getContextWithMedium, getRecurrence, listDraftLines } from './service.ts';
 import { getEditVolume, renderEditVolume } from './edit-volume.ts';
 
 const { values, positionals } = parseArgs({
@@ -26,7 +26,10 @@ try {
     if (r.medium === null) process.stderr.write(`bragi: medium is unknown for ${arg}: add \`medium:\` to article.yaml\n`);
   }
   else if (command === 'list') {
-    for (const d of (await listDrafts(options)).drafts) process.stdout.write(`${d.slug}\t${d.medium ?? '-'}\t${d.stageLabel}\t${d.waitingOn}\t${d.due ?? '-'}\n`);
+    const r = await listDraftLines(options);
+    for (const line of r.lines) process.stdout.write(`${line}\n`);
+    // stderr only: stdout stays the lines a machine reads.
+    for (const note of r.notes) process.stderr.write(`bragi: ${note}\n`);
   } else if (command === 'candidates' && arg) {
     const r = await getCandidates(options, arg);
     process.stdout.write(values.json ? `${JSON.stringify(r, null, 2)}\n` : r.text);

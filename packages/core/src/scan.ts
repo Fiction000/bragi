@@ -249,6 +249,7 @@ export async function scanDrafts(rootInput: string, options: ScanOptions = {}): 
       scanWarnings.push(`GitHub から PR の情報を取れなかった（PR は状態不明として出す）: ${githubError}`);
     }
   } else if (!github) githubError = 'GitHub を使わない設定';
+  const githubStatus: ScanResult['github'] = !github ? 'off' : githubError ? 'failed' : 'ok';
 
   const drafts: Draft[] = [];
   for (const [i, m] of materials.entries()) {
@@ -309,5 +310,5 @@ export async function scanDrafts(rootInput: string, options: ScanOptions = {}): 
       warnings: [...warnings, ...result.warnings],
     }));
   }
-  return scanResultSchema.parse({ root, author, scannedAt: now.toISOString(), drafts, skippedFiles, warnings: scanWarnings });
+  return scanResultSchema.parse({ root, author, scannedAt: now.toISOString(), drafts, skippedFiles, warnings: scanWarnings, github: githubStatus });
 }

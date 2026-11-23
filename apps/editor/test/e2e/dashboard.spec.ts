@@ -42,9 +42,13 @@ test('20 the home screen is a read-only list, one row per article, and sends no 
   expect(allSlugs.filter(slug => slug !== 'override-sample')).toEqual(initiallyVisible);
   await publishedToggle.uncheck();
   await expect(rows).toHaveCount(8);
-  await expect(rows.evaluateAll(items => items.map(item => item.getAttribute('data-slug')))).resolves.toEqual(initiallyVisible);
+  expect(await rows.evaluateAll(items => items.map(item => item.getAttribute('data-slug')))).toEqual(initiallyVisible);
+  await publishedToggle.check();
+  await expect(stageRow(page, 'override-sample')).toBeVisible();
   await page.reload();
-  await expect(page.getByLabel('公開済みも表示')).not.toBeChecked();
+  await expect(publishedToggle).not.toBeChecked();
+  await expect(rows).toHaveCount(8);
+  await expect(stageRow(page, 'override-sample')).toHaveCount(0);
   // The stages the files say, for the three kinds of synthetic run and the rest.
   const stage = (slug: string) => page.locator(`tr[data-slug="${slug}"]`);
   await expect(stage('writing-sample').locator('td').nth(2)).toHaveText('執筆中');

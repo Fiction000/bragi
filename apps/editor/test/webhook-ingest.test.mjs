@@ -25,7 +25,7 @@ async function treeBytes(dir, relative = '') {
   return output;
 }
 
-test('Hermes V2 signature matches timestamp-dot-raw-body and rejects stale timestamps', () => {
+test('V2 signature matches timestamp-dot-raw-body and rejects stale timestamps', () => {
   const body = Buffer.from('{"event_type":"bragi.editor.finished"}');
   const timestamp = String(Math.floor(Date.now() / 1000));
   const signed = signWebhook(body, 'secret', timestamp);
@@ -63,14 +63,14 @@ test('outbox persists before send, retries Retry-After, and quarantines permanen
   try {
     const event = { schema_version: 1, event_id: '8a4b38e1-15b2-42fb-a678-f0f7c25e9754', event_type: 'bragi.editor.finished' };
     await writeFile(file, JSON.stringify({ event, attempts: 0, status: 'pending' }));
-    const result = await sendOutboxEvent({ file, url: `http://127.0.0.1:${receiver.address().port}/hook`, secret: 'secret', sleep: async ms => waits.push(ms) });
+    const result = await sendOutboxEvent({ file, url: `http://127.0.0.1:${receiver.address().port}/hook`, signingKey: 'secret', sleep: async ms => waits.push(ms) });
     assert.equal(result.status, 'quarantined');
     assert.equal(requests.length, 2);
     assert.deepEqual(waits, [0]);
     assert.equal(requests[0].headers['x-request-id'], event.event_id);
     assert.equal(requests[0].headers['x-webhook-signature-v2'], createHmac('sha256', 'secret').update(requests[0].headers['x-webhook-timestamp'] + '.' + requests[0].body).digest('hex'));
     assert.equal(JSON.parse(await readFile(file, 'utf8')).status, 'quarantined');
-    await sendOutboxEvent({ file, url: `http://127.0.0.1:${receiver.address().port}/hook`, secret: 'secret', sleep: async () => {} });
+    await sendOutboxEvent({ file, url: `http://127.0.0.1:${receiver.address().port}/hook`, signingKey: 'secret', sleep: async () => {} });
     assert.equal(requests.length, 2, 'terminal outbox state is not delivered again');
   } finally { await new Promise(resolve => receiver.close(resolve)); await rm(tmp, { recursive: true, force: true }); }
 });
@@ -82,7 +82,7 @@ test('outbox retries transient failures five times after the initial attempt', a
   let requests = 0;
   await writeFile(file, JSON.stringify({ event: { event_id: '8a4b38e1-15b2-42fb-a678-f0f7c25e9754' }, attempts: 0, status: 'pending' }));
   try {
-    const result = await sendOutboxEvent({ file, url: 'http://127.0.0.1:1/hook', secret: 'secret', sleep: async ms => waits.push(ms), fetchImpl: async () => { requests++; return new Response(null, { status: 503 }); } });
+    const result = await sendOutboxEvent({ file, url: 'http://127.0.0.1:1/hook', signingKey: 'secret', sleep: async ms => waits.push(ms), fetchImpl: async () => { requests++; return new Response(null, { status: 503 }); } });
     assert.equal(result.status, 'exhausted');
     assert.equal(result.attempts, 6);
     assert.equal(requests, 6);

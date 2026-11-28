@@ -14,7 +14,7 @@ export function validateWebhookUrl(value) {
 
 export function signWebhook(body, secret, timestamp = String(Math.floor(Date.now() / 1000))) {
   const seconds = Number(timestamp);
-  if (!Number.isInteger(seconds) || Math.abs(Math.floor(Date.now() / 1000) - seconds) > HERMES_WINDOW_SECONDS) throw new Error('Webhook timestamp is outside Hermes replay window');
+  if (!Number.isInteger(seconds) || Math.abs(Math.floor(Date.now() / 1000) - seconds) > HERMES_WINDOW_SECONDS) throw new Error('Webhook timestamp is outside the accepted replay window');
   const raw = Buffer.isBuffer(body) ? body : Buffer.from(body);
   const signature = createHmac('sha256', secret).update(timestamp + '.').update(raw).digest('hex');
   return { 'X-Webhook-Timestamp': timestamp, 'X-Webhook-Signature-V2': signature };
@@ -44,7 +44,7 @@ function retryAfterMs(value, now = Date.now()) {
   return Number.isFinite(date) ? Math.max(0, date - now) : null;
 }
 
-export async function sendOutboxEvent({ file, url, secret, fetchImpl = fetch, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now }) {
+export async function sendOutboxEvent({ file, url, signingKey, fetchImpl = fetch, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now }) {
   const endpoint = validateWebhookUrl(url);
   const record = JSON.parse(await fs.readFile(file, 'utf8'));
   if (record.status !== 'pending') return record;
@@ -58,7 +58,7 @@ export async function sendOutboxEvent({ file, url, secret, fetchImpl = fetch, sl
     try {
       const response = await fetchImpl(endpoint, { method: 'POST', headers: {
         'content-type': 'application/json', 'X-Request-ID': record.event.event_id,
-        ...signWebhook(body, secret, timestamp),
+        ...signWebhook(body, signingKey, timestamp),
       }, body, signal: AbortSignal.timeout(15_000) });
       if (response.ok) { record.status = 'sent'; record.last_status = response.status; await persist(file, record); return record; }
       record.last_status = response.status;
@@ -90,7 +90,7 @@ export async function createFinishedEvent({ runDir, target, runId, record, event
     article: { slug: path.basename(path.dirname(runDir)), medium: target.medium || 'unknown' },
     editor_run: { key: runId, target_id: target.id, version: target.version },
     revision: { sha256: record.finalSha256, source_sha256: record.sourceSha256, finished_at: record.finishedAt },
-    artifact_ref: path.relative(path.dirname(path.dirname(runDir)), path.join(files, 'nat-final.md')).split(path.sep).join('/'), actor: 'tatsu',
+    artifact_ref: path.relative(path.dirname(path.dirname(runDir)), path.join(files, 'nat-final.md')).split(path.sep).join('/'), actor: 'author',
   };
   const outboxRecord = { event, status: 'pending', attempts: 0, created_at: now().toISOString() };
   await fs.mkdir(files, { recursive: true });

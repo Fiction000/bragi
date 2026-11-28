@@ -225,7 +225,7 @@ async function handleRun({ req, res, url, apiPath, runDir, targets, runId, webho
     if (!await atomicWriteOnce(finishFiles.finished, JSON.stringify(record, null, 2) + '\n')) return response(res, 409, { error: 'Already finished' });
     if (webhookEnabled) {
       const outbox = await createFinishedEvent({ runDir, target, runId, record, eventId: randomUUID() });
-      void sendOutboxEvent({ file: outbox.file ?? path.join(finishFiles.dir, 'finished-event.json'), url: webhookUrl, secret: webhookSecret, fetchImpl: webhookFetch }).catch(() => {});
+      void sendOutboxEvent({ file: outbox.file ?? path.join(finishFiles.dir, 'finished-event.json'), url: webhookUrl, signingKey: webhookSecret, fetchImpl: webhookFetch }).catch(() => {});
     }
     return response(res, 200, record);
   }
@@ -347,7 +347,7 @@ export async function createEditorServer({ run: runPath, draftsRoot, port = PORT
     }
   });
   if (webhookEnabled && dashboard) {
-    void listPendingOutboxes(draftsRoot).then(files => Promise.all(files.map(file => sendOutboxEvent({ file, url: webhookUrl, secret: webhookSecret, fetchImpl: webhookFetch })))).catch(() => {});
+    void listPendingOutboxes(draftsRoot).then(files => Promise.all(files.map(file => sendOutboxEvent({ file, url: webhookUrl, signingKey: webhookSecret, fetchImpl: webhookFetch })))).catch(() => {});
   }
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   return server;

@@ -98,32 +98,39 @@ test('undo keys defer during IME composition and are ignored in readonly mode', 
   const paragraph = editor().locator('p').first();
   await paragraph.click(); await page.keyboard.press('End'); await page.keyboard.insertText('composition-guard');
   const before = await editor().innerText();
-  await editor().evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, isComposing: true, bubbles: true, cancelable: true })));
-  expect(await editor().innerText()).toBe(before);
-  await editor().evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, isComposing: true, bubbles: true, cancelable: true })));
-  expect(await editor().innerText()).toBe(before);
-  await editor().evaluate(node => {
-    const event = new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true });
-    Object.defineProperty(event, 'keyCode', { value: 229 });
+  const dispatch = (init: { ctrlKey?: boolean; metaKey?: boolean; isComposing?: boolean; keyCode?: number; altKey?: boolean }) => editor().evaluate((node, init) => {
+    const event = new KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true, ...init });
+    if ('keyCode' in init) Object.defineProperty(event, 'keyCode', { value: init.keyCode });
     node.dispatchEvent(event);
-  });
+    return event.defaultPrevented;
+  }, init);
+  expect(await dispatch({ ctrlKey: true, isComposing: true })).toBe(false);
   expect(await editor().innerText()).toBe(before);
-  await editor().evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, altKey: true, bubbles: true, cancelable: true })));
+  expect(await dispatch({ metaKey: true, isComposing: true })).toBe(false);
+  expect(await editor().innerText()).toBe(before);
+  expect(await dispatch({ ctrlKey: true, keyCode: 229 })).toBe(false);
+  expect(await editor().innerText()).toBe(before);
+  expect(await dispatch({ ctrlKey: true, altKey: true })).toBe(false);
   expect(await editor().innerText()).toBe(before);
 
   await stop();
-  await start('---\ntitle: Readonly\n---\n\n| unsupported | syntax |\n| --- | --- |');
+  await start([
+    { id: 'editable-before-readonly', title: 'Editable history', medium: 'Zenn', version: 'review', source: 'editable.md', markdown: 'Editable starting text.' },
+    { id: 'readonly-after-edit', title: 'Readonly after edit', medium: 'Zenn', version: 'review', source: 'readonly.md', markdown: 'Readonly history marker.\n\n| unsupported | syntax |\n| --- | --- |' },
+  ]);
   await browser(browserFixture);
+  const editable = editor().locator('p').first();
+  await editable.click(); await page.keyboard.press('End'); await page.keyboard.insertText(' editable-history');
+  await waitSaved();
+  await page.getByRole('button', { name: /Editable history/ }).click();
+  await page.getByRole('dialog', { name: /原稿を開く/ }).getByRole('button', { name: /Readonly after edit/ }).click();
   await expect(page.locator('.unsupported')).toBeVisible();
+  await expect(editor()).toHaveAttribute('contenteditable', 'false');
   const readonlyText = await editor().innerText();
-  const prevented = await editor().evaluate(node => {
-    const event = new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true });
-    node.dispatchEvent(event);
-    return event.defaultPrevented;
-  });
-  expect(prevented).toBe(false);
+  expect(readonlyText).toContain('Readonly history marker.');
+  expect(await dispatch({ ctrlKey: true })).toBe(false);
   expect(await editor().innerText()).toBe(readonlyText);
-  await editor().evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true })));
+  expect(await dispatch({ metaKey: true })).toBe(false);
   expect(await editor().innerText()).toBe(readonlyText);
 });
 

@@ -53,7 +53,7 @@ async function stop() {
   if (tmp) await rm(tmp, { recursive: true, force: true });
 }
 // 'clean' also reads 保存済み, so wait on the explicit state to prove an actual save completed.
-const waitSaved = async () => { await expect(page.getByRole('status')).toHaveAttribute('data-save-state', 'saved', { timeout: 5000 }); await expect(page.getByRole('status')).toHaveText('保存済み'); };
+const waitSaved = async () => { const status = page.locator('.save-state'); await expect(status).toHaveAttribute('data-save-state', 'saved', { timeout: 5000 }); await expect(status).toHaveText('保存済み'); };
 const editor = () => page.locator('.ProseMirror');
 const source = path.join('05_final', '川沿いの帰り道 レビュー反映稿.md');
 async function addReasonToChanged(index = 0) {
@@ -400,11 +400,11 @@ test('28 a normalized no-op replacement preserves the prior bulk undo', async ({
   const dialog = page.getByRole('dialog', { name: '検索・置換' });
   await page.keyboard.press('Meta+Shift+h');
   await dialog.getByLabel('検索語').fill('skill');
-  await dialog.getByLabel('置換後').fill('term');
+  await dialog.getByLabel('置換後').fill('+ skill');
   await dialog.getByRole('button', { name: '選択した 2 件を置換' }).click();
   await expect(dialog.getByRole('button', { name: '元に戻す' })).toBeVisible();
-  await dialog.getByLabel('検索語').fill('term');
-  await dialog.getByLabel('置換後').fill('term ');
+  await dialog.getByLabel('検索語').fill('- skill');
+  await dialog.getByLabel('置換後').fill('+ skill');
   await dialog.getByRole('button', { name: '選択した 2 件を置換' }).click();
   await expect(dialog.getByRole('button', { name: '元に戻す' })).toBeVisible();
   await dialog.getByRole('button', { name: '元に戻す' }).click();

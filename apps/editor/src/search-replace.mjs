@@ -4,13 +4,59 @@ function excludedRanges(text, excludeCode) {
   if (!excludeCode) return [];
   const ranges = [];
   const add = pattern => { for (const match of text.matchAll(pattern)) ranges.push([match.index, match.index + match[0].length]); };
-  add(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/g);
-  add(/(^|\n)[ \t]*(```+|~~~+)[^\n]*\n[\s\S]*?(?:\n[ \t]*\2[ \t]*(?=\n|$)|$)/g);
-  add(/`+[^`\n]*`+/g);
-  for (const match of text.matchAll(/!?\[[^\]\n]*\]\(([^)\n]*)\)/g)) {
-    const openParen = match[0].indexOf('(');
-    const start = match.index + openParen + 1;
-    ranges.push([start, start + match[1].length]);
+  const lines = text.split('\n');
+  let offset = 0;
+  const firstLine = lines[0].endsWith('\r') ? lines[0].slice(0, -1) : lines[0];
+  if (/^---[ \t]*$/.test(firstLine)) {
+    offset = lines[0].length + (lines.length > 1 ? 1 : 0);
+    for (let index = 1; index < lines.length; index++) {
+      const raw = lines[index];
+      const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+      const lineEnd = offset + raw.length + (index < lines.length - 1 ? 1 : 0);
+      if (/^---[ \t]*$/.test(line)) { ranges.push([0, lineEnd]); break; }
+      offset = lineEnd;
+    }
+  }
+  offset = 0;
+  let fence;
+  for (let index = 0; index < lines.length; index++) {
+    const raw = lines[index];
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    const lineEnd = offset + raw.length + (index < lines.length - 1 ? 1 : 0);
+    if (!fence) {
+      const open = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+      if (open) fence = { marker: open[1][0], size: open[1].length, start: offset };
+    } else {
+      const close = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+      if (close && close[1][0] === fence.marker && close[1].length >= fence.size) {
+        ranges.push([fence.start, lineEnd]);
+        fence = undefined;
+      }
+    }
+    offset = lineEnd;
+  }
+  if (fence) ranges.push([fence.start, text.length]);
+  for (let index = 0; index < text.length;) {
+    const block = ranges.find(([start, end]) => index >= start && index < end);
+    if (block) { index = block[1]; continue; }
+    if (text[index] !== '`') { index++; continue; }
+    let openEnd = index + 1;
+    while (text[openEnd] === '`') openEnd++;
+    const size = openEnd - index;
+    let closeStart = -1;
+    for (let cursor = openEnd; cursor < text.length;) {
+      if (text[cursor] !== '`') { cursor++; continue; }
+      let closeEnd = cursor + 1;
+      while (text[closeEnd] === '`') closeEnd++;
+      if (closeEnd - cursor === size) { closeStart = cursor; break; }
+      cursor = closeEnd;
+    }
+    if (closeStart < 0) index = openEnd;
+    else { const end = closeStart + size; ranges.push([index, end]); index = end; }
+  }
+  for (const match of text.matchAll(/!?\[([^\]\n]*)\]\(([^)\n]*)\)/g)) {
+    const start = match.index + match[0].indexOf('](') + 2;
+    ranges.push([start, start + match[2].length]);
   }
   add(/^\s*\[[^\]]+\]:\s*\S+/gm);
   for (const match of text.matchAll(/[A-Za-z0-9_]+(?:[/:.][A-Za-z0-9_]+)+/g)) {
@@ -21,11 +67,6 @@ function excludedRanges(text, excludeCode) {
   add(/<!--(?:[\s\S]*?)-->/g);
   add(/<\/?[A-Za-z][^<>\n]*>/g);
   add(/<([A-Za-z][A-Za-z0-9_:-]*)[^<>\n]*>[\s\S]*?<[/]\1[ \t]*>/gi);
-  let offset = 0;
-  for (const line of text.split('\n')) {
-    for (const match of line.matchAll(/<([A-Za-z][A-Za-z0-9_:-]*)[^>]*>[^<]*<[/][A-Za-z][A-Za-z0-9_:-]* *>/gi)) ranges.push([offset + match.index, offset + match.index + match[0].length]);
-    offset += line.length + 1;
-  }
   return ranges.sort((a, b) => a[0] - b[0]);
 }
 
@@ -79,5 +120,10 @@ export function replaceSelected(text, matches, selected, replacement) {
 }
 
 export function previewContext(text, match, radius = 32) {
-  return { before: text.slice(Math.max(0, match.start - radius), match.start), hit: text.slice(match.start, match.end), after: text.slice(match.end, Math.min(text.length, match.end + radius)) };
+  let start = Math.max(0, match.start - radius);
+  let end = Math.min(text.length, match.end + radius);
+  const isLow = code => code >= 0xDC00 && code <= 0xDFFF;
+  if (start > 0 && isLow(text.charCodeAt(start))) start--;
+  if (end < text.length && isLow(text.charCodeAt(end))) end++;
+  return { before: text.slice(start, match.start), hit: text.slice(match.start, match.end), after: text.slice(match.end, end) };
 }

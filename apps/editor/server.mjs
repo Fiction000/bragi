@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAccessVerifier } from './access.mjs';
+import { createFinishedEvent, listPendingOutboxes, sendOutboxEvent, validateWebhookUrl } from './webhook-outbox.mjs';
 import { createGhGraphql, decodeRunKey, defaultLedgerDir, loadLedger, retireDecision, adoptProposal, rejectProposal, loadProposals, proposalsDirFor, defaultDraftsRoot, defaultTaskNotesDir, loadSettings, today, listEditorRuns, scanDrafts } from '@wle/core';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -175,7 +176,7 @@ function changedCount(source, markdown) {
 }
 
 // One run's API (everything under /api/targets and /api/drafts). `apiPath` is the path with any /r/<key> prefix removed.
-async function handleRun({ req, res, url, apiPath, runDir, targets, runId }) {
+async function handleRun({ req, res, url, apiPath, runDir, targets, runId, webhookUrl, webhookSecret, webhookEnabled, webhookFetch }) {
   if (req.method === 'GET' && apiPath === '/api/targets') {
     const items = [];
     for (const target of targets.values()) items.push({ id: target.id, title: target.title, medium: target.medium, version: target.version, finished: (await currentDraft(runDir, target)).finished });
@@ -222,6 +223,10 @@ async function handleRun({ req, res, url, apiPath, runDir, targets, runId }) {
     const src = await readSource(target), sourceMarkdown = src.body;
     const record = { id, finishedAt: new Date().toISOString(), sourceSha256: createHash('sha256').update(src.raw).digest('hex'), finalSha256: createHash('sha256').update(src.front + draft.state.markdown).digest('hex'), changedBlocks: changedCount(sourceMarkdown, draft.state.markdown), notes: draft.state.notes.length, unchanged: sourceMarkdown === draft.state.markdown };
     if (!await atomicWriteOnce(finishFiles.finished, JSON.stringify(record, null, 2) + '\n')) return response(res, 409, { error: 'Already finished' });
+    if (webhookEnabled) {
+      const outbox = await createFinishedEvent({ runDir, target, runId, record, eventId: randomUUID() });
+      void sendOutboxEvent({ file: outbox.file ?? path.join(finishFiles.dir, 'finished-event.json'), url: webhookUrl, signingKey: webhookSecret, fetchImpl: webhookFetch }).catch(() => {});
+    }
     return response(res, 200, record);
   }
   return false;
@@ -242,9 +247,11 @@ async function serveStatic(res, pathname) {
 // opens any scanned run at /r/<key>/. ledgerDir: the decision ledger folder (null: no ledger; the CLI passes the default). Only runs the scanner finds can be opened; a key is never a path.
 // publicHost: also answer for this hostname (behind Cloudflare Access, reached through the tunnel). Then
 // verifyAccess must be given, and every request with that Host needs a verified Access assertion.
-export async function createEditorServer({ run: runPath, draftsRoot, port = PORT, github, prRepos = [], taskNotesDir, draftsIndex, ledgerDir = null, proposalsDir = null, publicHost = null, verifyAccess = null }) {
+export async function createEditorServer({ run: runPath, draftsRoot, port = PORT, github, prRepos = [], taskNotesDir, draftsIndex, ledgerDir = null, proposalsDir = null, publicHost = null, verifyAccess = null, webhookUrl = process.env.BRAGI_WEBHOOK_URL, webhookSecret = process.env.BRAGI_WEBHOOK_SECRET, webhookFetch = fetch }) {
   if (!runPath && draftsRoot === undefined) throw new Error('--run <dir> is required');
   if (publicHost && typeof verifyAccess !== 'function') throw new Error('--public-host needs Access settings');
+  if (webhookUrl) webhookUrl = validateWebhookUrl(webhookUrl);
+  const webhookEnabled = Boolean(webhookUrl && typeof webhookSecret === 'string' && webhookSecret.trim());
   const runDir = runPath ? await fs.realpath(path.resolve(runPath)) : null;
   const targets = runDir ? await loadTargets(runDir) : null;
   const dashboard = draftsRoot !== undefined;
@@ -326,11 +333,11 @@ export async function createEditorServer({ run: runPath, draftsRoot, port = PORT
         if (!found) return response(res, 404, { error: 'Unknown run' });
         const rest = keyedMatch[2] ?? '/';
         if (req.method === 'GET' && !rest.startsWith('/api/')) return rest === '/' ? await serveStatic(res, '/') : response(res, 404, { error: 'Not found' });
-        const handled = await handleRun({ req, res, url, apiPath: rest, runDir: found.dir, targets: found.targets, runId: found.runId });
+        const handled = await handleRun({ req, res, url, apiPath: rest, runDir: found.dir, targets: found.targets, runId: found.runId, webhookUrl, webhookSecret, webhookEnabled, webhookFetch });
         return handled === false ? response(res, 404, { error: 'Not found' }) : handled;
       }
       if (runDir) {
-        const handled = await handleRun({ req, res, url, apiPath: rawPath, runDir, targets, runId: path.basename(runDir) });
+        const handled = await handleRun({ req, res, url, apiPath: rawPath, runDir, targets, runId: path.basename(runDir), webhookUrl, webhookSecret, webhookEnabled, webhookFetch });
         if (handled !== false) return handled;
       } else if (rawPath.startsWith('/api/')) return response(res, 404, { error: 'Not found' });
       if (req.method === 'GET') return await serveStatic(res, url.pathname);
@@ -339,6 +346,10 @@ export async function createEditorServer({ run: runPath, draftsRoot, port = PORT
       response(res, error.status ?? 500, { error: error.message });
     }
   });
+  if (webhookEnabled) {
+    const outboxRoot = draftsRoot ?? runDir;
+    void listPendingOutboxes(outboxRoot).then(files => Promise.all(files.map(file => sendOutboxEvent({ file, url: webhookUrl, signingKey: webhookSecret, fetchImpl: webhookFetch })))).catch(() => {});
+  }
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   return server;
 }

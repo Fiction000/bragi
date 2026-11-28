@@ -75,7 +75,7 @@ export const editorRunSchema = z.object({
   /** Opaque, URL-safe id of the run folder, derived from its path under the root. Only scanned runs have one. */
   key: z.string().regex(/^[A-Za-z0-9_-]+$/),
   relPath: z.string(),
-  targets: z.array(z.object({ id: z.string(), title: z.string(), medium: z.string().nullable(), finished: z.boolean(), placeholders: z.array(z.string()) })),
+  targets: z.array(z.object({ id: z.string(), title: z.string(), medium: z.string().nullable(), finished: z.boolean(), placeholders: z.array(z.string()), agentRevision: z.boolean().optional(), verified: z.boolean().optional(), version: z.string().optional() })),
 });
 export type EditorRun = z.infer<typeof editorRunSchema>;
 

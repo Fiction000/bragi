@@ -79,6 +79,7 @@ async function findEditorRuns(root: string, articleDir: string, depth = 0): Prom
           medium: t.medium ?? null,
           finished: await exists(path.join(articleDir, '05_final', 'editor', t.id, 'finished.json')),
           placeholders: findPlaceholders(await targetText(articleDir, t.id, t.source), loadSettings().author),
+          ...(t.agentRevision === true ? { agentRevision: true, verified: t.verified === true, ...(typeof t.version === 'string' ? { version: t.version } : {}) } : {}),
         });
       }
       runs.push({ key: encodeRunKey(relPath), relPath, targets });

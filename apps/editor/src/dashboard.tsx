@@ -52,7 +52,7 @@ export default function Dashboard({ onOpen }: { onOpen?: (path: string) => void 
             {p.state === 'open' && (p.gate ? <a className={`badge gate-${p.gate.verdict}${p.gate.stale ? ' stale' : ''}`} href={p.gate.url ?? undefined} target="_blank" rel="noreferrer" title={p.gate.stale ? '古い head への判定' : undefined}>{gates[p.gate.verdict]}{p.gate.stale && '（古い）'}</a> : p.ci && <span className="badge gate-none">gate 未判定</span>)}
             {p.state === 'open' && !!p.unresolvedReviews && <span className="badge review">未解決 {p.unresolvedReviews}</span>}
           </div>)}</td>
-          <td>{open ? <a className="open" href={`/r/${open.key}/`} onClick={e => { if (onOpen) { e.preventDefault(); onOpen(`/r/${open.key}/`); } }}>開く</a> : <span className="none">—</span>}</td>
+          <td>{open ? <a className="open" href={`/r/${open.key}/`} onClick={e => { if (onOpen && !newTab(e)) { e.preventDefault(); onOpen(`/r/${open.key}/`); } }}>開く</a> : <span className="none">—</span>}</td>
         </tr>;
       })}</tbody>
     </table>
@@ -62,3 +62,6 @@ export default function Dashboard({ onOpen }: { onOpen?: (path: string) => void 
     <footer>{scan.root}　／　{new Date(scan.scannedAt).toLocaleString('ja-JP')} に読み込み{scan.skippedFiles.length > 0 && `　／　フォルダでない単独ファイル ${scan.skippedFiles.length} 件は対象外`}</footer>
   </main>;
 }
+
+// Cmd/Ctrl/Shift/Alt or a non-primary click keeps the browser's own link behavior (new tab, new window).
+const newTab = (e: { button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }) => e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey;

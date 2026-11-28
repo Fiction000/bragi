@@ -3,3 +3,6 @@ export let apiBase = location.pathname.match(/^\/r\/[A-Za-z0-9_-]+/)?.[0] ?? '';
 export const updateApiBase = (pathname = location.pathname) => {
   apiBase = pathname.match(/^\/r\/[A-Za-z0-9_-]+/)?.[0] ?? '';
 };
+// The open editor registers this so a browser back/forward can ask before leaving unsaved changes.
+export let confirmLeave: (() => boolean) | undefined;
+export const setConfirmLeave = (fn?: () => boolean) => { confirmLeave = fn; };

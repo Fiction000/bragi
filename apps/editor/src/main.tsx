@@ -2,13 +2,13 @@ import '@fontsource/noto-serif-jp/400.css';
 import '@fontsource/noto-serif-jp/500.css';
 import '@fontsource/noto-sans-jp/400.css';
 import '@fontsource/noto-sans-jp/500.css';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './view';
 import Dashboard from './dashboard';
 import Ledger from './ledger';
 import Proposals from './proposals';
-import { updateApiBase } from './base';
+import { confirmLeave, updateApiBase } from './base';
 import './style.css';
 
 // A run opened from the list (/r/<key>/) is the editor. At / the list shows when the server has a drafts folder;
@@ -18,9 +18,12 @@ function Root() {
   const [page, setPage] = useState(location.hash);
   const [pathname, setPathname] = useState(location.pathname);
   const [dashboardOpened, setDashboardOpened] = useState(!location.pathname.startsWith('/r/'));
+  const shown = useRef(location.pathname + location.search);
   useEffect(() => {
     const onHash = () => setPage(location.hash);
     const onPop = () => {
+      if (location.pathname !== shown.current.split('?')[0] && confirmLeave && !confirmLeave()) { history.pushState({}, '', shown.current); return; }
+      shown.current = location.pathname + location.search;
       updateApiBase(location.pathname);
       setPathname(location.pathname);
       setPage(location.hash);
@@ -39,6 +42,7 @@ function Root() {
   }, [dashboard, editorRoute]);
   const navigate = (path: string) => {
     history.pushState({}, '', path);
+    shown.current = location.pathname + location.search;
     updateApiBase(path);
     setPathname(location.pathname);
   };

@@ -5,7 +5,7 @@ import Link from '@tiptap/extension-link';
 import { Markdown } from '@tiptap/markdown';
 import { Extension, type Editor } from '@tiptap/core';
 import { changedBlockIndices, randomUUID } from './model';
-import { apiBase } from './base';
+import { apiBase as routeApiBase, setConfirmLeave } from './base';
 import { findReplacements, previewContext, replaceSelected } from './search-replace.mjs';
 
 type Note = { id: string; anchor: { blockIndex: number; text: string }; body: string };
@@ -57,6 +57,8 @@ const markChanged = (editor: Editor, source: string, current: string) => {
 
 
 export default function App({ onBack }: { onBack?: () => void } = {}) {
+  // Fixed for this editor's lifetime: work still in flight after leaving must reach the run it started in.
+  const [apiBase] = useState(routeApiBase);
   const [targets, setTargets] = useState<Target[]>([]);
   const [target, setTarget] = useState<Target>();
   const [source, setSource] = useState('');
@@ -156,8 +158,10 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const updateNote = (id: string, body: string) => { const notes = state.current.notes.map(n => n.id === id ? { ...n, body } : n).filter(n => n.body.trim()); setDraft(s => ({ ...s, notes })); dispatch({ type: 'edit' }); planSave(); };
   const addNote = (index: number) => { const list = blocks(state.current.markdown); const note = { id: randomUUID(), anchor: { blockIndex: index, text: list[index] ?? '' }, body: '' }; setDraft(s => ({ ...s, notes: [...s.notes, note] })); dispatch({ type: 'edit' }); planSave(); setTimeout(() => document.querySelector<HTMLElement>(`[data-note="${note.id}"]`)?.focus(), 0); };
   const switchTo = async (id: string) => { if (['dirty', 'failed', 'conflict', 'backupFailed'].includes(status.current.save) && !await save()) return; setSwitcher(false); await load(id); };
+  const canLeave = useCallback(() => !['dirty', 'saving', 'failed', 'conflict', 'backupFailed'].includes(status.current.save) || window.confirm('未保存の変更があります。ページを移動しますか？'), []);
+  useEffect(() => { setConfirmLeave(canLeave); return () => setConfirmLeave(undefined); }, [canLeave]);
   const goBack = () => {
-    if (['dirty', 'saving', 'failed', 'conflict', 'backupFailed'].includes(status.current.save) && !window.confirm('未保存の変更があります。ページを移動しますか？')) return;
+    if (!canLeave()) return;
     if (onBack) onBack(); else location.assign('/');
   };
   const finish = async () => { if (['dirty', 'failed'].includes(status.current.save) && !await save()) return; dispatch({ type: 'finish' }); try { const r = await fetch(`${apiBase}/api/drafts/${target!.id}/finish`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseRevision: base.current }) }); if (!r.ok) throw new Error(); const result = await r.json(); (state.current as State & { changedBlocks?: number }).changedBlocks = result.changedBlocks; dispatch({ type: 'finished' }); setTargets(xs => xs.map(x => x.id === target!.id ? { ...x, finished: true } : x)); } catch { dispatch({ type: 'finishFailed' }); } };
@@ -245,7 +249,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   };
   const original = blocks(source), edited = blocks(draft.markdown), count = changed(original, edited);
   return <main className="app">
-    <header className="top"><button className="doc-title" onClick={() => { setBulkOpen(false); setSwitcher(true); }}>{target.title}　／　{target.medium}・{target.version}</button><button type="button" className="search-replace-open" disabled={readonly} onClick={() => { if (!readonlyRef.current) { setSwitcher(false); setBulkOpen(true); } }}>検索・置換　⌘⇧H</button>{apiBase && <a className="to-list" href="/" onClick={e => { e.preventDefault(); goBack(); }}>一覧へ</a>}<span role="status" data-save-state={model.save} className={`save-state ${model.save}`}>{statuses[model.save]}</span></header>
+    <header className="top"><button className="doc-title" onClick={() => { setBulkOpen(false); setSwitcher(true); }}>{target.title}　／　{target.medium}・{target.version}</button><button type="button" className="search-replace-open" disabled={readonly} onClick={() => { if (!readonlyRef.current) { setSwitcher(false); setBulkOpen(true); } }}>検索・置換　⌘⇧H</button>{apiBase && <a className="to-list" href="/" onClick={e => { if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; e.preventDefault(); goBack(); }}>一覧へ</a>}<span role="status" data-save-state={model.save} className={`save-state ${model.save}`}>{statuses[model.save]}</span></header>
     {readonly && <p className="unsupported">この原稿には、この画面で保てない書式があります。</p>}
     {model.save === 'failed' && <aside className="error"><strong>保存できませんでした</strong><p>変更はこのMacに保持されています。</p><button onClick={() => void save()}>再試行</button></aside>}
     {model.save === 'backupFailed' && <aside className="error"><strong>変更をこのMacに保持できませんでした</strong><p>このページを閉じないでください。</p></aside>}

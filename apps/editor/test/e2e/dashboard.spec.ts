@@ -209,6 +209,67 @@ test('browser back from the list restores the prior editor run and its save targ
   }).toEqual({ displayedB: true, saveStatus: 200, aShaUnchanged: true, bShaChanged: true, savedBContainsEdit: true });
 });
 
+const makeSharedRun = async (slug: string, title: string, body: string) => {
+  const dir = path.join(tmp, 'drafts', slug, 'editor-run');
+  await mkdir(path.join(dir, '05_final', 'editor', 'shared-v1'), { recursive: true });
+  await writeFile(path.join(dir, 'editor-targets.json'), JSON.stringify({ targets: [{ id: 'shared-v1', title, medium: 'Test', version: 'review', source: '05_final/article.md' }] }));
+  await writeFile(path.join(dir, '05_final', 'article.md'), `${title} source\n`);
+  await writeFile(path.join(dir, '05_final', 'editor', 'shared-v1', 'nat-final.md'), body);
+  await writeFile(path.join(dir, '05_final', 'editor', 'shared-v1', 'nat-notes.json'), '[]\n');
+};
+
+test('browser back with unsaved changes asks first and keeps the editor on cancel', async ({ page }) => {
+  await makeSharedRun('run-a', 'Run A', 'RUN A ARTICLE ONLY\n');
+  let releasePut: () => void = () => {};
+  await page.route('**/api/drafts/shared-v1', route => route.request().method() === 'PUT' ? new Promise<void>(r => { releasePut = () => { void route.continue(); r(); }; }) : route.continue());
+  await page.goto(origin);
+  await stageRow(page, 'run-a').getByRole('link', { name: '開く' }).click();
+  await expect(page.locator('.ProseMirror')).toContainText('RUN A ARTICLE ONLY');
+  await page.locator('.ProseMirror p').first().click();
+  await page.keyboard.press('End');
+  await page.keyboard.insertText(' 戻る前の未保存');
+  const dialogs: string[] = [];
+  page.once('dialog', d => { dialogs.push(d.message()); void d.dismiss(); });
+  await page.goBack();
+  await expect(page).toHaveURL(/\/r\/[A-Za-z0-9_-]+\/$/);
+  await expect(page.locator('.ProseMirror')).toContainText('戻る前の未保存');
+  expect(dialogs).toEqual(['未保存の変更があります。ページを移動しますか？']);
+  page.once('dialog', d => void d.accept());
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
+  releasePut();
+});
+
+test('a finish still in flight after switching runs is sent to the run it started in', async ({ page }) => {
+  await makeSharedRun('run-a', 'Run A', 'RUN A ARTICLE ONLY\n');
+  await makeSharedRun('run-b', 'Run B', 'RUN B ARTICLE ONLY\n');
+  let releasePut: () => void = () => {};
+  let held = false;
+  await page.route('**/api/drafts/shared-v1', route => {
+    if (route.request().method() !== 'PUT' || held) return route.continue();
+    held = true;
+    return new Promise<void>(r => { releasePut = () => { void route.continue(); r(); }; });
+  });
+  const finishes: string[] = [];
+  page.on('request', req => { if (req.method() === 'POST' && req.url().endsWith('/finish')) finishes.push(new URL(req.url()).pathname); });
+  await page.goto(origin);
+  const aHref = await stageRow(page, 'run-a').getByRole('link', { name: '開く' }).getAttribute('href');
+  await stageRow(page, 'run-a').getByRole('link', { name: '開く' }).click();
+  await expect(page.locator('.ProseMirror')).toContainText('RUN A ARTICLE ONLY');
+  await page.locator('.ProseMirror p').first().click();
+  await page.keyboard.press('End');
+  await page.keyboard.insertText(' A');
+  await page.getByRole('button', { name: '直し終えた' }).click();
+  await expect.poll(() => held).toBe(true);
+  page.once('dialog', d => void d.accept());
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await stageRow(page, 'run-b').getByRole('link', { name: '開く' }).click();
+  await expect(page.locator('.ProseMirror')).toContainText('RUN B ARTICLE ONLY');
+  releasePut();
+  await expect.poll(() => finishes.length).toBe(1);
+  expect(finishes[0]).toBe(`${aHref!.replace(/\/$/, '')}/api/drafts/shared-v1/finish`);
+});
+
 test('direct editor URL returns to the list when clicking 一覧へ', async ({ page }) => {
   await page.goto(origin);
   const href = await stageRow(page, 'editing-sample').getByRole('link', { name: '開く' }).getAttribute('href');

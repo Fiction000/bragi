@@ -299,6 +299,7 @@ test('21 readonly fixture disables bulk search and never writes article bytes', 
   await page.waitForTimeout(900);
   expect(writes).toBe(0);
   expect(await readFile(path.join(run, '05_final/bulk-original.md'))).toEqual(original);
+  await expect(readFile(path.join(run, '05_final/editor/bulkreplace/nat-final.md'))).rejects.toThrow();
 });
 
 test('22 IME composition edits invalidate one-step bulk undo', async ({ browser: browserFixture }) => {
@@ -348,6 +349,8 @@ test('24 switching documents resets hit selection and result status', async ({ b
   await dialog.getByLabel('検索語').fill('skill');
   await dialog.getByLabel('置換後').fill('スキル');
   await dialog.getByRole('checkbox', { name: '置換候補 1' }).uncheck();
+  await dialog.getByLabel('置換後').fill('語');
+  await expect(dialog.getByRole('button', { name: '選択した 1 件を置換' })).toBeEnabled();
   await dialog.getByRole('button', { name: '選択した 1 件を置換' }).click();
   await expect(dialog.getByText('1件を置換しました。')).toBeVisible();
   const remaining = dialog.getByRole('checkbox', { name: '置換候補 1' });
@@ -388,4 +391,23 @@ test('27 identical replacement text does not report successful changes', async (
   await dialog.getByLabel('置換後').fill('skill');
   await dialog.getByRole('button', { name: '選択した 2 件を置換' }).click();
   await expect(dialog.getByText(/件を置換しました/)).toHaveCount(0);
+});
+
+test('28 a normalized no-op replacement preserves the prior bulk undo', async ({ browser: browserFixture }) => {
+  await stop();
+  const original = ['skill', '', 'skill', ''].join(String.fromCharCode(10));
+  await start(original); await browser(browserFixture);
+  const dialog = page.getByRole('dialog', { name: '検索・置換' });
+  await page.keyboard.press('Meta+Shift+h');
+  await dialog.getByLabel('検索語').fill('skill');
+  await dialog.getByLabel('置換後').fill('term');
+  await dialog.getByRole('button', { name: '選択した 2 件を置換' }).click();
+  await expect(dialog.getByRole('button', { name: '元に戻す' })).toBeVisible();
+  await dialog.getByLabel('検索語').fill('term');
+  await dialog.getByLabel('置換後').fill('term ');
+  await dialog.getByRole('button', { name: '選択した 2 件を置換' }).click();
+  await expect(dialog.getByRole('button', { name: '元に戻す' })).toBeVisible();
+  await dialog.getByRole('button', { name: '元に戻す' }).click();
+  await waitSaved();
+  expect(await readFile(path.join(run, '05_final/editor/bulkreplace/nat-final.md'))).toEqual(Buffer.from(original));
 });

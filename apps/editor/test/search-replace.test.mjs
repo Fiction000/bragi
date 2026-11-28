@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { findReplacements, replaceSelected } from '../src/search-replace.mjs';
+import { findReplacements, previewContext, replaceSelected } from '../src/search-replace.mjs';
 
 test('default exclusion skips inline/fenced code, links and URLs but keeps Japanese prose', () => {
   const text = '日本語 skill、`skills/list`。 https://example.com/skill [label](https://x.test/skill)\n```json\n{"skills":"skill"}\n```\n次の skill';
@@ -81,4 +81,43 @@ test('letter-only code identifiers are excluded but numeric dates, times and ver
   assert.equal(findReplacements('2026/11/28 10:30 1.2', '11').matches.length, 1);
   assert.equal(findReplacements('2026/11/28 10:30 1.2', '30').matches.length, 1);
   assert.equal(findReplacements('2026/11/28 10:30 1.2', '1').matches.length, 4);
+});
+
+test('fenced code excludes empty blocks, CRLF blocks and longer closing fences without hiding later prose', () => {
+  const text = ['before skill', '```json', '```', 'after skill', '~~~~', 'skill', '~~~~~', 'tail skill'].join(String.fromCharCode(13, 10));
+  assert.deepEqual(findReplacements(text, 'skill').matches.map(m => m.text), ['skill', 'skill', 'skill']);
+});
+
+test('inline code spans with embedded backticks require an exactly matching delimiter run', () => {
+  const text = 'before skill ``code `skill` here`` after skill';
+  assert.deepEqual(findReplacements(text, 'skill').matches.map(m => m.start), [7, 41]);
+});
+
+test('link labels containing parentheses do not shift destination exclusion', () => {
+  const text = '[Guide (v2)](skill) [skill (guide)](skill)';
+  assert.deepEqual(findReplacements(text, 'skill').matches.map(m => m.start), [21]);
+});
+
+test('comparison-like type text before a real same-line tag remains searchable', () => {
+  const text = 'x<T で skill を <span>表示</span>';
+  assert.deepEqual(findReplacements(text, 'skill').matches.map(m => m.text), ['skill']);
+});
+
+test('empty front matter does not consume a following horizontal rule and prose', () => {
+  const text = ['---', '---', 'skill', '---', 'section skill'].join(String.fromCharCode(10));
+  assert.deepEqual(findReplacements(text, 'skill').matches.map(m => m.text), ['skill', 'skill']);
+});
+
+test('preview context never slices a surrogate pair', () => {
+  const text = 'A😀BCskillDE😀F';
+  const match = findReplacements(text, 'skill').matches[0];
+  const context = previewContext(text, match, 3);
+  const pieces = [context.before, context.hit, context.after];
+  const hasBrokenSurrogate = value => {
+    const first = value.charCodeAt(0), last = value.charCodeAt(value.length - 1);
+    return (first >= 0xDC00 && first <= 0xDFFF) || (last >= 0xD800 && last <= 0xDBFF);
+  };
+  assert.ok(pieces.every(value => !hasBrokenSurrogate(value)));
+  assert.ok(context.before.endsWith('😀BC'));
+  assert.ok(context.after.startsWith('DE😀'));
 });

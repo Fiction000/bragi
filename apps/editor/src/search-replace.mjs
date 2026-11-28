@@ -6,6 +6,7 @@ function excludedRanges(text, excludeCode) {
   const add = pattern => { for (const match of text.matchAll(pattern)) ranges.push([match.index, match.index + match[0].length]); };
   const lines = text.split('\n');
   let offset = 0;
+  let frontMatterEnd = 0;
   const firstLine = lines[0].endsWith('\r') ? lines[0].slice(0, -1) : lines[0];
   if (/^---[ \t]*$/.test(firstLine)) {
     offset = lines[0].length + (lines.length > 1 ? 1 : 0);
@@ -13,7 +14,7 @@ function excludedRanges(text, excludeCode) {
       const raw = lines[index];
       const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
       const lineEnd = offset + raw.length + (index < lines.length - 1 ? 1 : 0);
-      if (/^---[ \t]*$/.test(line)) { ranges.push([0, lineEnd]); break; }
+      if (/^---[ \t]*$/.test(line)) { frontMatterEnd = lineEnd; ranges.push([0, lineEnd]); break; }
       offset = lineEnd;
     }
   }
@@ -23,9 +24,13 @@ function excludedRanges(text, excludeCode) {
     const raw = lines[index];
     const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
     const lineEnd = offset + raw.length + (index < lines.length - 1 ? 1 : 0);
+    if (offset < frontMatterEnd) {
+      offset = lineEnd;
+      continue;
+    }
     if (!fence) {
       const open = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
-      if (open) fence = { marker: open[1][0], size: open[1].length, start: offset };
+      if (open && !(open[1][0] === '`' && open[2].includes('`'))) fence = { marker: open[1][0], size: open[1].length, start: offset };
     } else {
       const close = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
       if (close && close[1][0] === fence.marker && close[1].length >= fence.size) {
@@ -45,6 +50,7 @@ function excludedRanges(text, excludeCode) {
     const size = openEnd - index;
     let closeStart = -1;
     for (let cursor = openEnd; cursor < text.length;) {
+      if (ranges.some(([start, end]) => cursor >= start && cursor < end)) break;
       if (text[cursor] !== '`') { cursor++; continue; }
       let closeEnd = cursor + 1;
       while (text[closeEnd] === '`') closeEnd++;

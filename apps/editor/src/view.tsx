@@ -183,7 +183,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const load = useCallback(async (id: string, preserve = false) => {
     readonlyReviewApplied.current = false;
     const r = await fetch(`${apiBase}/api/drafts/${id}`); if (!r.ok) return;
-    const data = await r.json(); loading.current = true; bulkUndo.current = undefined; bulkUndoApplied.current = undefined; selectedHitsIdentity.current = ''; setSelectedHits([]); setBulkResult(''); setBulkOpen(false); setSwitcher(false); base.current = data.revision; runId.current = r.headers.get('x-editor-run-id') ?? runId.current;
+    const data = await r.json(); loading.current = true; setReviewApplyBusy(false); bulkUndo.current = undefined; bulkUndoApplied.current = undefined; selectedHitsIdentity.current = ''; setSelectedHits([]); setBulkResult(''); setBulkOpen(false); setSwitcher(false); base.current = data.revision; runId.current = r.headers.get('x-editor-run-id') ?? runId.current;
     trailingNewlines.current = data.state.markdown.match(/\n*$/)?.[0] ?? '';
     setTarget({ ...data.target, finished: data.finished }); setSource(data.sourceMarkdown); setDraft(data.state); dispatch({ type: 'reset' });
     const parsed = editor?.markdown?.parse(data.sourceMarkdown);
@@ -219,7 +219,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
 
   const updateNote = (id: string, body: string) => { readonlyReviewApplied.current = false; const notes = state.current.notes.map(n => n.id === id ? { ...n, body } : n).filter(n => n.body.trim()); setDraft(s => ({ ...s, notes })); dispatch({ type: 'edit' }); planSave(); };
   const addNote = (index: number) => { readonlyReviewApplied.current = false; const list = blocks(state.current.markdown); const note = { id: randomUUID(), anchor: { blockIndex: index, text: list[index] ?? '' }, body: '' }; setDraft(s => ({ ...s, notes: [...s.notes, note] })); dispatch({ type: 'edit' }); planSave(); setTimeout(() => document.querySelector<HTMLElement>(`[data-note="${note.id}"]`)?.focus(), 0); };
-  const switchTo = async (id: string) => { if (['dirty', 'failed', 'conflict', 'backupFailed'].includes(status.current.save) && !await save()) return; setSwitcher(false); await load(id); };
+  const switchTo = async (id: string) => { if (!reviewApplyBusy && ['dirty', 'failed', 'conflict', 'backupFailed'].includes(status.current.save) && !await save()) return; setSwitcher(false); await load(id); };
   const canLeave = useCallback(() => !['dirty', 'saving', 'failed', 'conflict', 'backupFailed'].includes(status.current.save) || window.confirm('未保存の変更があります。ページを移動しますか？'), []);
   useEffect(() => { setConfirmLeave(canLeave); return () => setConfirmLeave(undefined); }, [canLeave]);
   const goBack = () => {

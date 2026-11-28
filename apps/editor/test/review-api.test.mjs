@@ -22,6 +22,7 @@ test('review API starts one authenticated run for a saved section, validates out
     for await (const chunk of req) chunks.push(chunk);
     if (req.method === 'POST' && req.url === '/v1/runs') {
       runPosts++; postHeaders = req.headers; postBody = JSON.parse(Buffer.concat(chunks).toString());
+      await new Promise(resolve => setTimeout(resolve, 40));
       res.writeHead(202, { 'content-type': 'application/json' }); res.end(json({ run_id: 'fake-run-1', status: 'queued' })); return;
     }
     if (req.method === 'GET' && req.url === '/v1/runs/fake-run-1/events') {
@@ -53,9 +54,11 @@ test('review API starts one authenticated run for a saved section, validates out
     const sectionResponse = await (await api(`/api/reviews/sections?target=${targetId}`)).json();
     assert.equal(sectionResponse.revision, draft.revision);
     assert.equal(Array.isArray(sectionResponse.sections), true);
-    const start = await api(`/api/reviews/start?target=${targetId}`, { method: 'POST', body: json({ sectionId: section.section_id, baseRevision: draft.revision }) });
-    assert.equal(start.status, 202);
-    const session = await start.json();
+    const starts = await Promise.all([1, 2].map(() => api(`/api/reviews/start?target=${targetId}`, { method: 'POST', body: json({ sectionId: section.section_id, baseRevision: draft.revision }) })));
+    assert.deepEqual(starts.map(response => response.status).sort(), [200, 202]);
+    const session = await (starts.find(response => response.status === 202)).json();
+    const duplicate = await (starts.find(response => response.status === 200)).json();
+    assert.equal(duplicate.id, session.id);
     assert.equal(runPosts, 1);
     assert.equal(postHeaders.authorization, `Bearer ${FAKE_KEY}`);
     assert.equal(postHeaders['idempotency-key'], `bragi-review-${session.id}`);
@@ -79,12 +82,25 @@ test('review API starts one authenticated run for a saved section, validates out
     assert.match(finalDraft.state.markdown, /夕方、買い物の帰りに川沿いを歩きました。/);
     const files = await readFile(path.join(run, '05_final', 'editor', targetId, 'reviews', `${session.id}.json`), 'utf8');
     assert.equal(JSON.parse(files).decisions[0].action, 'applied');
-    const discarded = await api(`/api/reviews/${session.id}/discard?target=${targetId}`, { method: 'POST', body: json({ discardAll: true }) });
+    const nextSection = reviewSections(finalDraft.state.markdown)[0];
+    const secondStart = await api(`/api/reviews/start?target=${targetId}`, { method: 'POST', body: json({ sectionId: nextSection.section_id, baseRevision: finalDraft.revision }) });
+    assert.equal(secondStart.status, 202);
+    const secondSession = await secondStart.json();
+    runStatus = 'completed';
+    await api(`/api/reviews/${secondSession.id}?target=${targetId}`);
+    const changedState = { ...finalDraft.state, markdown: `${finalDraft.state.markdown}\nA later revision.` };
+    const savedAgain = await api(`/api/drafts/${targetId}`, { method: 'PUT', body: json({ state: changedState, baseRevision: finalDraft.revision }) });
+    assert.equal(savedAgain.status, 200);
+    const newest = await (await api(`/api/drafts/${targetId}`)).json();
+    const newestSection = reviewSections(newest.state.markdown)[0];
+    assert.equal(newestSection.section_id, section.section_id);
+    assert.notEqual(newestSection.section_sha, section.section_sha);
+    const priorSecond = await (await api(`/api/reviews/session?target=${targetId}&sectionId=${newestSection.section_id}`)).json();
+    assert.equal(priorSecond.id, secondSession.id);
+    const discarded = await api(`/api/reviews/${secondSession.id}/discard?target=${targetId}`, { method: 'POST', body: json({ discardAll: true }) });
     assert.equal(discarded.status, 200);
-    const afterDiscard = await (await api(`/api/reviews/${session.id}?target=${targetId}`)).json();
-    assert.equal(afterDiscard.status, 'discarded');
-    const priorDiscarded = await (await api(`/api/reviews/session?target=${targetId}&sectionId=${section.section_id}`)).json();
-    assert.equal(priorDiscarded, null);
+    const afterDiscard = await (await api(`/api/reviews/session?target=${targetId}&sectionId=${newestSection.section_id}`)).json();
+    assert.equal(afterDiscard, null);
   } finally {
     await new Promise(resolve => server.close(resolve)); await new Promise(resolve => hermes.close(resolve)); await rm(tmp, { recursive: true, force: true });
     if (oldUrl === undefined) delete process.env.BRAGI_HERMES_API_URL; else process.env.BRAGI_HERMES_API_URL = oldUrl;
@@ -95,6 +111,7 @@ test('review API starts one authenticated run for a saved section, validates out
 test('talk starts one continued run and only a completed answer creates a deduplicated draft proposal', async () => {
   const oldUrl = process.env.BRAGI_HERMES_API_URL, oldKey = process.env.BRAGI_HERMES_API_KEY;
   const posts = [];
+  let failedRunId = '';
 
   const hermes = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -112,7 +129,7 @@ test('talk starts one continued run and only a completed answer creates a dedupl
       const sectionId = input.match(/section_id=(s-[a-f0-9]+)/)[1];
       const sectionSha = input.match(/section_sha=([a-f0-9]{64})/)[1];
       const output = { findings: [{ finding_id: 'f-decision', section_id: sectionId, base_revision: sectionSha, anchor: { quote: 'Source line.', occurrence: 1 }, category: 'decision', rationale: '判断の根拠を確認します。', proposal: 'Use a checked fact.', decision_required: true, source_refs: [] }] };
-      res.writeHead(200, { 'content-type': 'application/json' }); res.end(json({ run_id: match[1], status: 'completed', output: json(output) })); return;
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(json({ run_id: match[1], status: failedRunId === match[1] ? 'failed' : 'completed', ...(failedRunId === match[1] ? {} : { output: json(output) }) })); return;
     }
     res.writeHead(404); res.end();
   });
@@ -145,7 +162,19 @@ test('talk starts one continued run and only a completed answer creates a dedupl
     const talked = await Promise.all(['この判断の出典を確認してください。', '判断に必要な証拠も教えてください。'].map(message => api(`/api/reviews/${session.id}/talk?target=review-sample`, { method: 'POST', body: json({ message }) })));
     assert.deepEqual(talked.map(response => response.status), [202, 202]);
     assert.equal(posts.length, 3);
-    assert.deepEqual(new Set(posts.slice(1).map(post => post.headers['idempotency-key'])), new Set([`bragi-review-${session.id}-talk-0`, `bragi-review-${session.id}-talk-1`]));
+    assert.deepEqual(new Set(posts.slice(1).map(post => post.headers['idempotency-key'])), new Set([`bragi-review-${session.id}-a1-talk-0`, `bragi-review-${session.id}-a1-talk-1`]));
+    failedRunId = posts[2].runId;
+    await api(`/api/reviews/${session.id}?target=review-sample`);
+    const retried = await api('/api/reviews/start?target=review-sample', { method: 'POST', body: json({ sectionId: section.section_id, baseRevision: draft.revision }) });
+    assert.equal(retried.status, 202);
+    assert.equal(posts.length, 4);
+    const retriedSession = await retried.json();
+    assert.equal(retriedSession.attempt, 2);
+    const retryTalk = await api(`/api/reviews/${session.id}/talk?target=review-sample`, { method: 'POST', body: json({ message: 'Check the new attempt.' }) });
+    assert.equal(retryTalk.status, 202);
+    assert.notEqual(posts[4].headers['idempotency-key'], posts[1].headers['idempotency-key']);
+    const retryTalkTwo = await api(`/api/reviews/${session.id}/talk?target=review-sample`, { method: 'POST', body: json({ message: 'One more check after retry.' }) });
+    assert.equal(retryTalkTwo.status, 202);
     assert.equal(typeof posts[0].headers['x-hermes-session-key'], 'string');
     assert.notEqual(posts[0].headers['x-hermes-session-key'], '');
     assert.equal(posts[1].headers['x-hermes-session-key'], posts[0].headers['x-hermes-session-key']);
@@ -169,8 +198,8 @@ test('talk starts one continued run and only a completed answer creates a dedupl
     assert.equal(discarded.status, 200);
     const retry = await api('/api/reviews/start?target=review-sample', { method: 'POST', body: json({ sectionId: section.section_id, baseRevision: draft.revision }) });
     assert.equal(retry.status, 202);
-    assert.equal((await retry.json()).attempt, 2);
-    assert.equal(posts[3].headers['idempotency-key'], `bragi-review-${session.id}-retry-2`);
+    assert.equal((await retry.json()).attempt, 3);
+    assert.equal(posts[6].headers['idempotency-key'], `bragi-review-${session.id}-retry-3`);
   } finally {
     await new Promise(resolve => server.close(resolve)); await new Promise(resolve => hermes.close(resolve)); await rm(tmp, { recursive: true, force: true });
     if (oldUrl === undefined) delete process.env.BRAGI_HERMES_API_URL; else process.env.BRAGI_HERMES_API_URL = oldUrl;

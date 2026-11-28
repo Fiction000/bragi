@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 type Section = { index: number; heading: string; section_id: string; section_sha: string };
 type Finding = { finding_id: string; section_id: string; base_revision: string; anchor: { quote: string; occurrence: number }; category: 'auto' | 'decision'; rationale: string; proposal: string; decision_required: boolean; source_refs: string[] };
@@ -17,6 +17,7 @@ export default function ReviewPanel({ apiBase, targetId, revision, markdown, sav
   const [stale, setStale] = useState(false);
   const identity = useRef({ targetId, sectionId });
   identity.current = { targetId, sectionId };
+  useLayoutEffect(() => () => { identity.current = { targetId: '', sectionId: '' }; }, []);
   const section = sections.find(item => item.section_id === sectionId) ?? sections[0];
   const endpoint = `${apiBase}/api/reviews`;
   const url = (route: string) => `${endpoint}${route}${route.includes('?') ? '&' : '?'}target=${encodeURIComponent(targetId)}`;
@@ -94,8 +95,8 @@ export default function ReviewPanel({ apiBase, targetId, revision, markdown, sav
       onApplied(result.markdown, result.revision);
       const updated = await request(`/${session!.id}`);
       if (identity.current.targetId === target && identity.current.sectionId === selected && updated.id === session!.id) setSession(updated);
-    } catch (e) { const err = e as Error & { code?: string }; if (err.code === 'stale') setStale(true); setError(err.message); }
-    finally { onApplyBusyChange(false); setBusy(false); }
+    } catch (e) { const err = e as Error & { code?: string }; if (identity.current.targetId === target && identity.current.sectionId === selected) { if (err.code === 'stale') setStale(true); setError(err.message); } }
+    finally { if (identity.current.targetId === target && identity.current.sectionId === selected) { onApplyBusyChange(false); setBusy(false); } }
   };
   const discard = async (finding: Finding) => {
     const target = targetId, selected = sectionId, sessionId = session!.id;

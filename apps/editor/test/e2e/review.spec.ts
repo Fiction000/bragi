@@ -127,3 +127,66 @@ test('review with agent stays section-scoped, applies valid findings, shows stal
     if (oldKey === undefined) delete process.env.BRAGI_HERMES_API_KEY; else process.env.BRAGI_HERMES_API_KEY = oldKey;
   }
 });
+
+test('a delayed apply response cannot replace the newly selected draft', async ({ page }) => {
+  const oldUrl = process.env.BRAGI_HERMES_API_URL, oldKey = process.env.BRAGI_HERMES_API_KEY;
+  const runs = new Map<string, string>();
+  let count = 0;
+  const hermes = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk as Buffer);
+    if (req.method === 'POST' && req.url === '/v1/runs') {
+      const id = `switch-run-${++count}`; runs.set(id, JSON.parse(Buffer.concat(chunks).toString()).input);
+      res.writeHead(202, { 'content-type': 'application/json' }); res.end(json({ run_id: id, status: 'queued' })); return;
+    }
+    const match = req.url?.match(/^\/v1\/runs\/(switch-run-\d+)$/);
+    if (req.method === 'GET' && match) {
+      const input = runs.get(match[1])!;
+      const sectionId = input.match(/section_id=(s-[a-f0-9]+)/)![1]; const sectionSha = input.match(/section_sha=([a-f0-9]{64})/)![1];
+      const output = { findings: [{ finding_id: 'finding-1', section_id: sectionId, base_revision: sectionSha, anchor: { quote: 'Opening text.', occurrence: 1 }, category: 'auto', rationale: 'Clarify the sentence.', proposal: 'Applied wording.', decision_required: false, source_refs: [] }] };
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(json({ run_id: match[1], status: 'completed', output: json(output) })); return;
+    }
+    res.writeHead(404); res.end();
+  });
+  const hermesPort = await listen(hermes);
+  process.env.BRAGI_HERMES_API_URL = `http://127.0.0.1:${hermesPort}`; process.env.BRAGI_HERMES_API_KEY = FAKE_KEY;
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'wle-review-switch-')); const runDir = path.join(tmp, 'run'); await cp(fixture, runDir, { recursive: true });
+  const targetFile = path.join(runDir, 'editor-targets.json');
+  const listing = JSON.parse(await readFile(targetFile, 'utf8'));
+  listing.targets = [
+    { id: 'first', title: 'First', medium: 'Synthetic', version: 'test', source: '05_final/first.md' },
+    { id: 'second', title: 'Second', medium: 'Synthetic', version: 'test', source: '05_final/second.md' },
+  ];
+  await writeFile(targetFile, json(listing));
+  await writeFile(path.join(runDir, '05_final/first.md'), 'Opening text.\n');
+  await writeFile(path.join(runDir, '05_final/second.md'), 'Second draft remains.\n\n<!-- preserve this note -->\n');
+  const server = await createEditorServer({ run: runDir, port: 0 }); const origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await page.goto(origin);
+    await expect(page.getByRole('combobox', { name: 'レビューする節' })).toBeVisible();
+    await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+    await page.getByRole('button', { name: 'この節をレビュー' }).click();
+    await expect(page.getByText('Clarify the sentence.')).toBeVisible();
+    let releaseApply!: () => void;
+    let resolveApplyReceived!: () => void;
+    const applyGate = new Promise<void>(resolve => { releaseApply = resolve; });
+    const applyReceived = new Promise<void>(resolve => { resolveApplyReceived = resolve; });
+    await page.route('**/api/reviews/*/apply?*', async route => { const response = await route.fetch(); resolveApplyReceived(); await applyGate; await route.fulfill({ response }); });
+    await page.getByRole('button', { name: '採る' }).click();
+    await applyReceived;
+    await page.getByRole('button', { name: 'First ／ Synthetic・test' }).click();
+    await page.getByRole('button', { name: 'Second Synthetic・test' }).click();
+    await expect(page.locator('.ProseMirror')).toContainText('Second draft remains.');
+    await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+    const appliedResponse = page.waitForResponse(response => response.url().includes('/apply') && response.status() === 200);
+    releaseApply();
+    await appliedResponse;
+    await expect(page.locator('.ProseMirror')).toContainText('Second draft remains.');
+    await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+    const secondDraft = await (await page.request.get(`${origin}/api/drafts/second`)).json();
+    expect(secondDraft.state.markdown).toBe('Second draft remains.\n\n<!-- preserve this note -->\n');
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve())); await new Promise<void>(resolve => hermes.close(() => resolve())); await rm(tmp, { recursive: true, force: true });
+    if (oldUrl === undefined) delete process.env.BRAGI_HERMES_API_URL; else process.env.BRAGI_HERMES_API_URL = oldUrl;
+    if (oldKey === undefined) delete process.env.BRAGI_HERMES_API_KEY; else process.env.BRAGI_HERMES_API_KEY = oldKey;
+  }
+});

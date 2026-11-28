@@ -103,7 +103,7 @@ export async function writeReviewSession(runDir, targetId, session) {
 }
 
 const reviewSessionQueues = new Map();
-export async function updateReviewSession(runDir, targetId, sessionId, update) {
+export async function updateReviewSession(runDir, targetId, sessionId, update, initial = null) {
   const file = path.join(runDir, '05_final', 'editor', targetId, 'reviews', `${sessionId}.json`);
   const previous = reviewSessionQueues.get(file) ?? Promise.resolve();
   let release;
@@ -112,7 +112,7 @@ export async function updateReviewSession(runDir, targetId, sessionId, update) {
   reviewSessionQueues.set(file, queued);
   await previous;
   try {
-    const session = await readReviewSession(runDir, targetId, sessionId);
+    const session = await readReviewSession(runDir, targetId, sessionId) ?? initial;
     if (!session) return null;
     const before = JSON.stringify(session);
     const updated = await update(session);
@@ -195,25 +195,24 @@ export async function handleReviewApi({ req, res, apiPath, runDir, targets, curr
     const draft = await current();
     return send(res, 200, { revision: draft.revision, sections: reviewSections(draft.state.markdown).map(({ index, heading, section_id, section_sha }) => ({ index, heading, section_id, section_sha })) });
   }
-  const refresh = async session => {
-    if (!session.runId || (['failed', 'cancelled', 'interrupted', 'discarded'].includes(session.status)) || (['completed', 'succeeded'].includes(session.status) && session.result)) return session;
-    const runId = session.runId;
+  const refreshSessionState = async latest => {
+    if (!latest.runId || ['failed', 'cancelled', 'interrupted', 'discarded'].includes(latest.status) || (['completed', 'succeeded'].includes(latest.status) && latest.result)) return latest;
+    const runId = latest.runId;
     const status = await getAgentRun(config, runId);
-    return await updateReviewSession(runDir, targetId, session.id, latest => {
-      if (latest.runId !== runId || latest.status === 'discarded') return latest;
-      const nextStatus = status.status ?? latest.status;
-      const turn = latest.turns?.find(item => item.runId === runId);
-      if (turn) turn.status = nextStatus;
-      latest.status = nextStatus;
-      if (['completed', 'succeeded'].includes(nextStatus)) {
-        const output = typeof status.output === 'string' ? status.output : '';
-        const section = { section_id: latest.section_id, section_sha: latest.section_sha, content: latest.section_content };
-        const checked = parseStructuredOutput(output, section);
-        latest.result = checked.valid ? { state: 'valid', findings: checked.findings } : { state: 'invalid', reason: checked.reason };
-      } else if (['failed', 'cancelled', 'interrupted'].includes(nextStatus)) latest.result = { state: 'failed' };
-      return latest;
-    }) ?? session;
+    if (latest.runId !== runId || latest.status === 'discarded') return latest;
+    const nextStatus = status.status ?? latest.status;
+    const turn = latest.turns?.find(item => item.runId === runId);
+    if (turn) turn.status = nextStatus;
+    latest.status = nextStatus;
+    if (['completed', 'succeeded'].includes(nextStatus)) {
+      const output = typeof status.output === 'string' ? status.output : '';
+      const section = { section_id: latest.section_id, section_sha: latest.section_sha, content: latest.section_content };
+      const checked = parseStructuredOutput(output, section);
+      latest.result = checked.valid ? { state: 'valid', findings: checked.findings } : { state: 'invalid', reason: checked.reason };
+    } else if (['failed', 'cancelled', 'interrupted'].includes(nextStatus)) latest.result = { state: 'failed' };
+    return latest;
   };
+  const refresh = async session => await updateReviewSession(runDir, targetId, session.id, refreshSessionState) ?? session;
   if (req.method === 'GET' && apiPath === '/api/reviews/session') {
     const draft = await current();
     const section = await sectionFor(draft.state, new URL(req.url, `http://${req.headers.host}`).searchParams.get('sectionId'));
@@ -227,11 +226,10 @@ export async function handleReviewApi({ req, res, apiPath, runDir, targets, curr
       for (const name of await fs.readdir(dir)) {
         if (!name.endsWith('.json') || !/^[a-f0-9]{32}/.test(name)) continue;
         const candidate = JSON.parse(await fs.readFile(path.join(dir, name), 'utf8'));
-        if (candidate.status === 'discarded') continue;
         if (candidate.section_id === section.section_id && candidate.section_sha !== section.section_sha && (!prior || candidate.createdAt > prior.createdAt)) prior = candidate;
       }
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    return send(res, 200, prior ? { ...(await refresh(prior)), stale: true } : null);
+    return send(res, 200, prior && prior.status !== 'discarded' ? { ...(await refresh(prior)), stale: true } : null);
   }
   if (req.method === 'POST' && apiPath === '/api/reviews/start') {
     const body = await readBody(req), draft = await current();
@@ -239,18 +237,17 @@ export async function handleReviewApi({ req, res, apiPath, runDir, targets, curr
     const section = await sectionFor(draft.state, body.sectionId);
     if (!section) return send(res, 404, { error: 'Unknown section' });
     const id = sessionIdFor(path.basename(runDir), targetId, section);
-    let session = await readReviewSession(runDir, targetId, id);
-    if (session?.runId) {
-      session = await refresh(session);
-      const retryable = ['failed', 'cancelled', 'interrupted', 'discarded'].includes(session.status) || session.result?.state === 'invalid';
-      if (!retryable) return send(res, 200, session);
-    }
     const instruction = 'Review this article section only. Return only JSON matching {"findings":[{"finding_id":"f1","section_id":"...","base_revision":"...","anchor":{"quote":"exact unique text","occurrence":1},"category":"auto|decision","rationale":"...","proposal":"...","decision_required":false,"source_refs":[]}]} . Do not invent facts. Use category decision when meaning or judgment changes. Keep proposals in the same language as the source.';
-    const attempt = (session?.attempt ?? 0) + 1;
-    const launched = await startAgentReview(config, { section, target, idempotencyKey: attempt === 1 ? `bragi-review-${id}` : `bragi-review-${id}-retry-${attempt}`, conversationKey: `bragi-review-${id}`, instruction });
-    session = { ...session, id, targetId, section_id: section.section_id, section_sha: section.section_sha, section_content: section.content, heading: section.heading, conversationKey: `bragi-review-${id}`, runId: launched.runId, status: launched.status, result: null, decisions: [], turns: [], attempt, createdAt: session?.createdAt ?? new Date().toISOString() };
-    await writeReviewSession(runDir, targetId, session);
-    return send(res, 202, session);
+    let responseStatus = 202;
+    const initial = { id, targetId, section_id: section.section_id, section_sha: section.section_sha, section_content: section.content, heading: section.heading, conversationKey: `bragi-review-${id}`, runId: null, status: 'queued', result: null, decisions: [], turns: [], attempt: 0, createdAt: new Date().toISOString() };
+    const session = await updateReviewSession(runDir, targetId, id, async latest => {
+      latest = await refreshSessionState(latest);
+      if (latest.runId && !(['failed', 'cancelled', 'interrupted', 'discarded'].includes(latest.status) || latest.result?.state === 'invalid')) { responseStatus = 200; return latest; }
+      const attempt = (latest.attempt ?? 0) + 1;
+      const launched = await startAgentReview(config, { section, target, idempotencyKey: attempt === 1 ? `bragi-review-${id}` : `bragi-review-${id}-retry-${attempt}`, conversationKey: `bragi-review-${id}`, instruction });
+      return { ...latest, id, targetId, section_id: section.section_id, section_sha: section.section_sha, section_content: section.content, heading: section.heading, conversationKey: `bragi-review-${id}`, runId: launched.runId, status: launched.status, result: null, decisions: [], turns: [], attempt, createdAt: latest.createdAt ?? new Date().toISOString() };
+    }, initial);
+    return send(res, responseStatus, session);
   }
   const sessionMatch = apiPath.match(/^\/api\/reviews\/([a-f0-9]{32})(?:\/(events|apply|discard|talk|propose))?$/);
   if (!sessionMatch) return send(res, 404, { error: 'Not found' });
@@ -309,7 +306,7 @@ export async function handleReviewApi({ req, res, apiPath, runDir, targets, curr
     session = await updateReviewSession(runDir, targetId, id, async latest => {
       if (latest.status === 'discarded') { rejected = true; return latest; }
       const turn = latest.turns.length;
-      const launched = await startAgentReview(config, { section: { heading: latest.heading, section_id: latest.section_id, section_sha: latest.section_sha, content: latest.section_content }, target, idempotencyKey: `bragi-review-${id}-talk-${turn}`, conversationKey: latest.conversationKey, instruction: `Continue the review conversation. The reviewed section is fixed to sha ${latest.section_sha}. Respond with the structured review JSON contract, and include any reply in rationale. User: ${body.message}` });
+      const launched = await startAgentReview(config, { section: { heading: latest.heading, section_id: latest.section_id, section_sha: latest.section_sha, content: latest.section_content }, target, idempotencyKey: `bragi-review-${id}-a${latest.attempt}-talk-${turn}`, conversationKey: latest.conversationKey, instruction: `Continue the review conversation. The reviewed section is fixed to sha ${latest.section_sha}. Respond with the structured review JSON contract, and include any reply in rationale. User: ${body.message}` });
       latest.turns.push({ message: body.message, runId: launched.runId, status: launched.status, at: new Date().toISOString() });
       latest.runId = launched.runId; latest.status = launched.status; latest.result = null;
       return latest;

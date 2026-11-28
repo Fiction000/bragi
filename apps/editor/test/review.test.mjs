@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { applyFinding, hermesApiConfig, reviewSections, validateReviewResult } from '../review.mjs';
+import { applyFinding, hermesApiConfig, proxyAgentEvents, readReviewSession, reviewSections, updateReviewSession, validateReviewResult, writeReviewSession } from '../review.mjs';
 
 const FAKE_KEY = 'fake-test-key';
 
@@ -37,6 +41,54 @@ test('agent endpoint configuration requires HTTP loopback and both values', () =
   assert.throws(() => hermesApiConfig({ BRAGI_HERMES_API_URL: 'https://localhost', BRAGI_HERMES_API_KEY: FAKE_KEY }), { status: 503 });
 });
 
+test('parallel session updates serialize and preserve every decision', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wle-review-queue-'));
+  const session = { id: '0123456789abcdef0123456789abcdef', decisions: [], counter: 0 };
+  try {
+    await writeReviewSession(root, 'target', session);
+    await Promise.all(Array.from({ length: 32 }, (_, index) => updateReviewSession(root, 'target', session.id, current => {
+      current.counter += 1;
+      current.decisions.push({ findingId: `f${index}` });
+      return current;
+    })));
+    const saved = await readReviewSession(root, 'target', session.id);
+    assert.equal(saved.counter, 32);
+    assert.equal(saved.decisions.length, 32);
+    assert.equal(new Set(saved.decisions.map(item => item.findingId)).size, 32);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('SSE proxy aborts on client close and destroys a response when the upstream fails after headers', async () => {
+  const originalFetch = globalThis.fetch;
+  let signal;
+  const response = () => Object.assign(new EventEmitter(), {
+    headersSent: false, writableEnded: false, destroyed: false,
+    writeHead() { this.headersSent = true; },
+    write() { return false; },
+    end() { this.writableEnded = true; },
+    destroy() { this.destroyed = true; },
+  });
+  try {
+    globalThis.fetch = async (_url, options) => {
+      signal = options.signal;
+      return { ok: true, status: 200, body: { async *[Symbol.asyncIterator]() { yield Buffer.from('event'); } } };
+    };
+    const client = response();
+    const pending = proxyAgentEvents({ base: 'http://127.0.0.1', key: FAKE_KEY }, 'run-1', undefined, client);
+    await new Promise(resolve => setImmediate(resolve));
+    client.emit('close');
+    assert.equal((await pending).status, 200);
+    assert.equal(signal.aborted, true);
+    assert.equal(client.destroyed, true);
+
+    const failed = response();
+    failed.write = () => true;
+    globalThis.fetch = async () => ({ ok: true, status: 200, body: { async *[Symbol.asyncIterator]() { yield Buffer.from('event'); throw new Error('upstream failed'); } } });
+    assert.equal((await proxyAgentEvents({ base: 'http://127.0.0.1', key: FAKE_KEY }, 'run-2', undefined, failed)).status, 200);
+    assert.equal(failed.destroyed, true);
+  } finally { globalThis.fetch = originalFetch; }
+});
 test('proposal replacement requires a unique exact quote in the unchanged section', () => {
   const markdown = '# One\nCurrent wording.\n\n# Two\nOther paragraph.';
   const section = reviewSections(markdown)[0];

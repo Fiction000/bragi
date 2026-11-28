@@ -50,6 +50,9 @@ test('review API starts one authenticated run for a saved section, validates out
     const targetId = targets[0].id;
     const draft = await (await api(`/api/drafts/${targetId}`)).json();
     const section = reviewSections(draft.state.markdown)[0];
+    const sectionResponse = await (await api(`/api/reviews/sections?target=${targetId}`)).json();
+    assert.equal(sectionResponse.revision, draft.revision);
+    assert.equal(Array.isArray(sectionResponse.sections), true);
     const start = await api(`/api/reviews/start?target=${targetId}`, { method: 'POST', body: json({ sectionId: section.section_id, baseRevision: draft.revision }) });
     assert.equal(start.status, 202);
     const session = await start.json();
@@ -70,6 +73,12 @@ test('review API starts one authenticated run for a saved section, validates out
     assert.match(finalDraft.state.markdown, /夕方、買い物の帰りに川沿いを歩きました。/);
     const files = await readFile(path.join(run, '05_final', 'editor', targetId, 'reviews', `${session.id}.json`), 'utf8');
     assert.equal(JSON.parse(files).decisions[0].action, 'applied');
+    const discarded = await api(`/api/reviews/${session.id}/discard?target=${targetId}`, { method: 'POST', body: json({ discardAll: true }) });
+    assert.equal(discarded.status, 200);
+    const afterDiscard = await (await api(`/api/reviews/${session.id}?target=${targetId}`)).json();
+    assert.equal(afterDiscard.status, 'discarded');
+    const priorDiscarded = await (await api(`/api/reviews/session?target=${targetId}&sectionId=${section.section_id}`)).json();
+    assert.equal(priorDiscarded, null);
   } finally {
     await new Promise(resolve => server.close(resolve)); await new Promise(resolve => hermes.close(resolve)); await rm(tmp, { recursive: true, force: true });
     if (oldUrl === undefined) delete process.env.BRAGI_HERMES_API_URL; else process.env.BRAGI_HERMES_API_URL = oldUrl;
@@ -129,6 +138,8 @@ test('talk starts one continued run and only a completed answer creates a dedupl
     assert.equal(talked.status, 202);
     assert.equal(posts.length, 2);
     assert.equal(posts[1].headers['idempotency-key'], `bragi-review-${session.id}-talk-0`);
+    assert.equal(typeof posts[0].headers['x-hermes-session-key'], 'string');
+    assert.notEqual(posts[0].headers['x-hermes-session-key'], '');
     assert.equal(posts[1].headers['x-hermes-session-key'], posts[0].headers['x-hermes-session-key']);
     const answered = await (await api(`/api/reviews/${session.id}?target=review-sample`)).json();
     assert.equal(answered.result.state, 'valid');
@@ -144,6 +155,12 @@ test('talk starts one continued run and only a completed answer creates a dedupl
     const proposals = await (await api('/api/proposals')).json();
     assert.equal(proposals.proposals.length, 1);
     assert.equal(proposals.proposals[0].meta.scope, 'draft');
+    const discarded = await api(`/api/reviews/${session.id}/discard?target=review-sample`, { method: 'POST', body: json({ discardAll: true }) });
+    assert.equal(discarded.status, 200);
+    const retry = await api('/api/reviews/start?target=review-sample', { method: 'POST', body: json({ sectionId: section.section_id, baseRevision: draft.revision }) });
+    assert.equal(retry.status, 202);
+    assert.equal((await retry.json()).attempt, 2);
+    assert.equal(posts[2].headers['idempotency-key'], `bragi-review-${session.id}-retry-2`);
   } finally {
     await new Promise(resolve => server.close(resolve)); await new Promise(resolve => hermes.close(resolve)); await rm(tmp, { recursive: true, force: true });
     if (oldUrl === undefined) delete process.env.BRAGI_HERMES_API_URL; else process.env.BRAGI_HERMES_API_URL = oldUrl;

@@ -27,7 +27,11 @@ test('review with agent stays section-scoped, applies valid findings, shows stal
       const run = runs.get(match[1])!; run.reads++;
       const sectionId = run.input.match(/section_id=(s-[a-f0-9]+)/)![1]; const sectionSha = run.input.match(/section_sha=([a-f0-9]{64})/)![1];
       const quote = run.input.includes('First sentence is unclear.') ? 'First sentence is unclear.' : run.input.includes('First sentence is clearer.') ? 'First sentence is clearer.' : run.input.includes('First sentence changed elsewhere.') ? 'First sentence changed elsewhere.' : 'Second section remains untouched.';
-      const output = { findings: [{ finding_id: 'finding-1', section_id: sectionId, base_revision: sectionSha, anchor: { quote, occurrence: 1 }, category: 'auto', rationale: '一文を短くします。', proposal: quote === 'First sentence is unclear.' ? 'First sentence is clearer.' : 'Second section stays as written.', decision_required: false, source_refs: [] }] };
+      const output = { findings: [
+        { finding_id: 'finding-1', section_id: sectionId, base_revision: sectionSha, anchor: { quote, occurrence: 1 }, category: 'auto', rationale: '一文を短くします。', proposal: quote === 'First sentence is unclear.' ? 'First sentence is clearer.' : 'Second section stays as written.', decision_required: false, source_refs: [] },
+        { finding_id: 'finding-2', section_id: sectionId, base_revision: sectionSha, anchor: { quote, occurrence: 1 }, category: 'decision', rationale: '判断の根拠を確認します。', proposal: 'A verified alternative.', decision_required: true, source_refs: [] },
+        { finding_id: 'finding-3', section_id: sectionId, base_revision: sectionSha, anchor: { quote, occurrence: 1 }, category: 'decision', rationale: '別の観点も確認します。', proposal: 'Another verified alternative.', decision_required: true, source_refs: [] },
+      ] };
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(json({ run_id: match[1], status: run.reads > 1 ? 'completed' : 'running', ...(run.reads > 1 ? { output: json(output) } : {}) })); return;
     }
     if (req.method === 'GET' && req.url?.includes('/events')) { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(''); return; }
@@ -51,7 +55,19 @@ test('review with agent stays section-scoped, applies valid findings, shows stal
     await expect(page.getByText('レビューを生成中')).toBeVisible();
     await expect(page.getByText('一文を短くします。')).toBeVisible();
     await expect(page.getByRole('heading', { name: '① 修正案' })).toBeVisible();
-    await expect(page.locator('.review-anchor-widget')).toHaveText('①');
+    await expect(page.getByRole('heading', { name: '② 判断が必要' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '③ 判断が必要' })).toBeVisible();
+    const badges = page.locator('.review-anchor-widget');
+    await expect(badges).toHaveCount(3);
+    await expect(badges.nth(0)).toHaveText('①');
+    await expect(badges.nth(1)).toHaveText('②');
+    await expect(badges.nth(2)).toHaveText('③');
+    await page.getByRole('button', { name: '話す' }).first().click();
+    await page.locator('#review-message').fill('Please verify the alternatives.');
+    await page.getByRole('button', { name: '送る' }).click();
+    await expect(page.locator('.review-answer textarea')).toHaveCount(2);
+    await page.locator('.review-answer textarea').nth(0).fill('First answer');
+    await expect(page.locator('.review-answer textarea').nth(1)).toHaveValue('');
     const overflowAt = () => page.evaluate(() => [...document.querySelectorAll('.review-layout,.editor-shell,.notes-layer,.review-panel,.ProseMirror,.review-finding')].filter(element => { const rect = element.getBoundingClientRect(); return element.scrollWidth > element.clientWidth + 1 || rect.left < -1 || rect.right > innerWidth + 1; }).map(element => ({ className: (element as HTMLElement).className, left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth })));
     await page.screenshot({ path: path.join(evidence, 'review-agent-1440-active.png'), fullPage: true });
     expect(await overflowAt()).toEqual([]);
@@ -61,8 +77,15 @@ test('review with agent stays section-scoped, applies valid findings, shows stal
     expect(await overflowAt()).toEqual([]);
     await page.screenshot({ path: path.join(evidence, 'review-agent-820-active.png'), fullPage: true });
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await page.getByRole('button', { name: '採る' }).click();
+    let releaseApply!: () => void;
+    const applyGate = new Promise<void>(resolve => { releaseApply = resolve; });
+    await page.route('**/api/reviews/*/apply?*', async route => { await applyGate; await route.continue(); });
+    await page.getByRole('button', { name: '採る' }).first().click();
+    await expect(page.getByRole('combobox', { name: 'レビューする節' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '採る' }).first()).toBeDisabled();
+    releaseApply();
     await expect(page.locator('.ProseMirror')).toContainText('First sentence is clearer.');
+    await page.unroute('**/api/reviews/*/apply?*');
 
     await page.getByRole('combobox', { name: 'レビューする節' }).selectOption({ label: '2. ## Second' });
     await page.getByRole('button', { name: 'この節をレビュー' }).click();
@@ -71,7 +94,7 @@ test('review with agent stays section-scoped, applies valid findings, shows stal
     const firstSection = reviewSections(draft.state.markdown)[0];
     const differentSectionEdit = draft.state.markdown.replace('First sentence is clearer.', 'First sentence changed elsewhere.');
     await api(`/api/drafts/${targetId}`, { method: 'PUT', body: json({ baseRevision: draft.revision, state: { ...draft.state, markdown: differentSectionEdit } }) });
-    await page.getByRole('button', { name: '採る' }).click();
+    await page.getByRole('button', { name: '採る' }).first().click();
     await expect(page.locator('.ProseMirror')).toContainText('Second section stays as written.');
     draft = await (await api(`/api/drafts/${targetId}`)).json();
     expect(draft.state.markdown).toContain('Second section stays as written.');

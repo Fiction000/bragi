@@ -10,7 +10,7 @@ const fixture = path.resolve('test/fixtures/run');
 const contexts = [];
 let server, run, tmp, port, context, page;
 
-async function start(custom = false) {
+async function start(custom = false, dashboard = false) {
   tmp = await mkdtemp(path.join(os.tmpdir(), 'wle-e2e-'));
   run = path.join(tmp, 'run');
   await cp(fixture, run, { recursive: true });
@@ -36,7 +36,7 @@ Use \`skills/list\`.
       await writeFile(path.join(run, 'editor-targets.json'), JSON.stringify({ targets: [{ id: 'bulkreplace', title: 'Bulk Replace Fixture', medium: 'Zenn', version: 'review', source: '05_final/bulk-original.md' }] }));
     }
   }
-  server = await createEditorServer({ run, port: 0 });
+  server = await createEditorServer({ run, ...(dashboard ? { draftsRoot: tmp, github: null, taskNotesDir: null } : {}), port: 0 });
   port = server.address().port;
 }
 async function browser(browserFixture) {
@@ -46,6 +46,13 @@ async function browser(browserFixture) {
   await page.goto(`http://127.0.0.1:${port}`);
   await expect(page.locator('.ProseMirror')).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
+}
+async function browserDashboard(browserFixture) {
+  context = await browserFixture.newContext();
+  contexts.push(context);
+  page = await context.newPage();
+  await page.goto(`http://127.0.0.1:${port}`);
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
 }
 async function stop() {
   for (const item of contexts.splice(0)) await item.close();
@@ -473,6 +480,39 @@ test('27 identical replacement text does not report successful changes', async (
   await dialog.getByLabel('置換後').fill('skill');
   await dialog.getByRole('button', { name: '選択した 2 件を置換' }).click();
   await expect(dialog.getByText(/件を置換しました/)).toHaveCount(0);
+});
+
+test('29 editor back navigation does not reload the document', async ({ browser: browserFixture }) => {
+  await stop();
+  await start(false, true);
+  await browserDashboard(browserFixture);
+  await page.locator('a.open').first().click();
+  await expect(editor()).toBeVisible();
+  const documents: string[] = [];
+  page.on('request', request => { if (request.isNavigationRequest()) documents.push(request.url()); });
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
+  expect(documents).toHaveLength(0);
+});
+
+test('30 editor back keeps the current unsaved-change confirmation', async ({ browser: browserFixture }) => {
+  await stop();
+  await start(false, true);
+  await browserDashboard(browserFixture);
+  await page.locator('a.open').first().click();
+  await expect(editor()).toBeVisible();
+  await editor().locator('p').first().click();
+  await page.keyboard.press('End');
+  await page.keyboard.insertText('未保存確認');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await expect(page).toHaveURL(/\/r\//);
+  await expect(editor()).toContainText('未保存確認');
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
 });
 
 test('28 a normalized no-op replacement preserves the prior bulk undo', async ({ browser: browserFixture }) => {

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { createEditorServer } from '../../server.mjs';
@@ -115,6 +116,107 @@ test('21 開く opens the run in the existing editor under /r/<key>/, and 一覧
   await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
   // An article with no editor run has nothing to open.
   await expect(stageRow(page, 'writing-sample').getByRole('link', { name: '開く' })).toHaveCount(0);
+});
+
+test('switching runs from the list displays and saves only the selected run', async ({ page }) => {
+  const makeRun = async (slug: string, title: string, body: string) => {
+    const dir = path.join(tmp, 'drafts', slug, 'editor-run');
+    await mkdir(path.join(dir, '05_final', 'editor', 'shared-v1'), { recursive: true });
+    await writeFile(path.join(dir, 'editor-targets.json'), JSON.stringify({ targets: [{ id: 'shared-v1', title, medium: 'Test', version: 'review', source: '05_final/article.md' }] }));
+    await writeFile(path.join(dir, '05_final', 'article.md'), `${title} source\n`);
+    const working = path.join(dir, '05_final', 'editor', 'shared-v1', 'nat-final.md');
+    await writeFile(working, body);
+    await writeFile(path.join(dir, '05_final', 'editor', 'shared-v1', 'nat-notes.json'), '[]\n');
+    return working;
+  };
+  const aPath = await makeRun('run-a', 'Run A', 'RUN A ARTICLE ONLY\n');
+  const bPath = await makeRun('run-b', 'Run B', 'RUN B ARTICLE ONLY\n');
+  const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
+  const aBefore = await readFile(aPath);
+  const bBefore = await readFile(bPath);
+
+  await page.goto(origin);
+  await expect(stageRow(page, 'run-a')).toBeVisible();
+  await stageRow(page, 'run-a').getByRole('link', { name: '開く' }).click();
+  await expect(page.locator('.ProseMirror')).toContainText('RUN A ARTICLE ONLY');
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
+  await expect(page.locator('.app')).toHaveCount(0);
+  await stageRow(page, 'run-b').getByRole('link', { name: '開く' }).click();
+  await expect(page.locator('.ProseMirror')).toBeVisible();
+  const displayedB = await page.locator('.ProseMirror').innerText();
+
+  const saveResponse = page.waitForResponse(response => response.request().method() === 'PUT' && new URL(response.url()).pathname.endsWith('/api/drafts/shared-v1'));
+  await page.locator('.ProseMirror p').first().click();
+  await page.keyboard.press('End');
+  await page.keyboard.insertText(' B EDITED');
+  const response = await saveResponse;
+  const aAfter = await readFile(aPath);
+  const bAfter = await readFile(bPath);
+  expect({
+    displayedB: displayedB.includes('RUN B ARTICLE ONLY'),
+    saveStatus: response.status(),
+    aShaUnchanged: sha(aAfter) === sha(aBefore),
+    bShaChanged: sha(bAfter) !== sha(bBefore),
+    savedBContainsB: bAfter.toString().includes('RUN B ARTICLE ONLY'),
+    savedBContainsEdit: bAfter.toString().includes('B EDITED'),
+  }).toEqual({ displayedB: true, saveStatus: 200, aShaUnchanged: true, bShaChanged: true, savedBContainsB: true, savedBContainsEdit: true });
+});
+
+test('browser back from the list restores the prior editor run and its save target', async ({ page }) => {
+  const makeRun = async (slug: string, title: string, body: string) => {
+    const dir = path.join(tmp, 'drafts', slug, 'editor-run');
+    await mkdir(path.join(dir, '05_final', 'editor', 'shared-v1'), { recursive: true });
+    await writeFile(path.join(dir, 'editor-targets.json'), JSON.stringify({ targets: [{ id: 'shared-v1', title, medium: 'Test', version: 'review', source: '05_final/article.md' }] }));
+    await writeFile(path.join(dir, '05_final', 'article.md'), `${title} source\n`);
+    const working = path.join(dir, '05_final', 'editor', 'shared-v1', 'nat-final.md');
+    await writeFile(working, body);
+    await writeFile(path.join(dir, '05_final', 'editor', 'shared-v1', 'nat-notes.json'), '[]\n');
+    return working;
+  };
+  const aPath = await makeRun('run-a', 'Run A', 'RUN A ARTICLE ONLY\n');
+  const bPath = await makeRun('run-b', 'Run B', 'RUN B ARTICLE ONLY\n');
+  const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
+  const aBefore = await readFile(aPath);
+  const bBefore = await readFile(bPath);
+
+  await page.goto(origin);
+  await stageRow(page, 'run-a').getByRole('link', { name: '開く' }).click();
+  await expect(page.locator('.ProseMirror')).toContainText('RUN A ARTICLE ONLY');
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
+  await stageRow(page, 'run-b').getByRole('link', { name: '開く' }).click();
+  await expect(page.locator('.ProseMirror')).toContainText('RUN B ARTICLE ONLY');
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/\/r\/[A-Za-z0-9_-]+\/$/);
+  await expect(page.locator('.ProseMirror')).toContainText('RUN B ARTICLE ONLY');
+
+  const saveResponse = page.waitForResponse(response => response.request().method() === 'PUT' && new URL(response.url()).pathname.endsWith('/api/drafts/shared-v1'));
+  await page.locator('.ProseMirror p').first().click();
+  await page.keyboard.press('End');
+  await page.keyboard.insertText(' B POPSTATE EDITED');
+  const response = await saveResponse;
+  const aAfter = await readFile(aPath);
+  const bAfter = await readFile(bPath);
+  expect({
+    displayedB: await page.locator('.ProseMirror').innerText().then(text => text.includes('RUN B ARTICLE ONLY')),
+    saveStatus: response.status(),
+    aShaUnchanged: sha(aAfter) === sha(aBefore),
+    bShaChanged: sha(bAfter) !== sha(bBefore),
+    savedBContainsEdit: bAfter.toString().includes('B POPSTATE EDITED'),
+  }).toEqual({ displayedB: true, saveStatus: 200, aShaUnchanged: true, bShaChanged: true, savedBContainsEdit: true });
+});
+
+test('direct editor URL returns to the list when clicking 一覧へ', async ({ page }) => {
+  await page.goto(origin);
+  const href = await stageRow(page, 'editing-sample').getByRole('link', { name: '開く' }).getAttribute('href');
+  expect(href).toMatch(/^\/r\/[A-Za-z0-9_-]+\/$/);
+  await page.goto(`${origin}${href}`);
+  await expect(page.locator('.ProseMirror')).toContainText('合成データ');
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
 });
 
 test('22 --run alone still opens the editor at /', async ({ page }) => {

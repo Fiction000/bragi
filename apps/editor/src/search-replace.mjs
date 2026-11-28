@@ -60,6 +60,7 @@ function excludedRanges(text, excludeCode) {
     if (closeStart < 0) index = openEnd;
     else { const end = closeStart + size; ranges.push([index, end]); index = end; }
   }
+  const codeRanges = ranges.slice();
   for (const match of text.matchAll(/!?\[([^\]\n]*)\]\(([^)\n]*)\)/g)) {
     const start = match.index + match[0].indexOf('](') + 2;
     ranges.push([start, start + match[2].length]);
@@ -70,9 +71,16 @@ function excludedRanges(text, excludeCode) {
   }
   add(/<https?:\/\/[^>\s]+>/gi);
   add(/https?:\/\/[^\s<>()\[\]{}]+/gi);
-  add(/<!--(?:[\s\S]*?)-->/g);
-  add(/<\/?[A-Za-z][^<>\n]*>/g);
-  add(/<([A-Za-z][A-Za-z0-9_:-]*)[^<>\n]*>[\s\S]*?<[/]\1[ \t]*>/gi);
+  const outsideCode = (start, end) => !codeRanges.some(([a, b]) => start < b && end > a);
+  const addOutsideCode = pattern => {
+    for (const match of text.matchAll(pattern)) {
+      const start = match.index, end = start + match[0].length;
+      if (outsideCode(start, end)) ranges.push([start, end]);
+    }
+  };
+  addOutsideCode(/<!--(?:[\s\S]*?)-->/g);
+  addOutsideCode(/<\/?[A-Za-z][^<>\n]*>/g);
+  addOutsideCode(/<([A-Za-z][A-Za-z0-9_:-]*)[^<>\n]*>[\s\S]*?<[/]\1[ \t]*>/gi);
   return ranges.sort((a, b) => a[0] - b[0]);
 }
 

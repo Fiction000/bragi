@@ -135,3 +135,12 @@ test('unmatched inline backticks do not pair across fenced code and hide prose',
   const text = ['prefix `unmatched', 'prose skill before fence', '```js', 'const value = `template`;', '```', 'after skill'].join(String.fromCharCode(10));
   assert.deepEqual(findReplacements(text, 'skill').matches.map(m => m.start), [24, 85]);
 });
+
+test('HTML comment or element patterns do not pair across separate code spans and hide prose', () => {
+  const inline = '開く `<div>` の後に skill、閉じる `</div>`。 コメント `<!--` と skill と `-->`。';
+  assert.deepEqual(findReplacements(inline, 'skill').matches.map(m => m.text), ['skill', 'skill']);
+  const fenced = '```html\n<div>\n```\n本文の skill\n```html\n</div>\n```\n';
+  assert.deepEqual(findReplacements(fenced, 'skill').matches.map(m => m.text), ['skill']);
+  const real = '前 skill <details>中の skill</details> 後 skill';
+  assert.deepEqual(findReplacements(real, 'skill').matches.map(m => m.start), [real.indexOf('skill'), real.lastIndexOf('skill')]);
+});

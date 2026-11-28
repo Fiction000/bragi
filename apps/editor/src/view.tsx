@@ -121,6 +121,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const shellRef = useRef<HTMLElement | null>(null);
   const [noteTops, setNoteTops] = useState<Record<string, number>>({});
   const [reviewAnchors, setReviewAnchors] = useState<ReviewAnchor[]>([]);
+  const [reviewApplyBusy, setReviewApplyBusy] = useState(false);
   const publishReviewAnchors = useCallback((anchors: ReviewAnchor[]) => setReviewAnchors(anchors), []);
   const [plusTops, setPlusTops] = useState<{ index: number; top: number }[]>([]);
   const [activeBlock, setActiveBlock] = useState(-1);
@@ -145,6 +146,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const bulkUndo = useRef<string | undefined>(undefined);
   const bulkUndoApplied = useRef<string | undefined>(undefined);
   const loading = useRef(false);
+  const readonlyReviewApplied = useRef(false);
   const runId = useRef('run');
   const storageKey = (id: string) => `wle:${runId.current}:${id}`;
   const readEditorMarkdown = () => {
@@ -161,6 +163,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   useEffect(() => { setReviewAnchors([]); }, [target?.id]);
   const save = useCallback(async () => {
     const t = currentTarget.current;
+    if (readonlyRef.current && readonlyReviewApplied.current && status.current.save === 'dirty') { dispatch({ type: 'reset' }); return true; }
     if (!t || readonlyRef.current || !['dirty', 'failed', 'conflict'].includes(status.current.save)) return status.current.save === 'saved' || status.current.save === 'clean';
     const snapshot = structuredClone(state.current);
     try { localStorage.setItem(storageKey(t.id), JSON.stringify({ state: snapshot, baseRevision: base.current, savedAt: new Date().toISOString() })); }
@@ -178,6 +181,7 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const planSave = useCallback(() => { clearTimeout(timer.current); timer.current = setTimeout(() => { if (!composing.current && !editor?.view.composing) void save(); }, 800); }, [editor, save]);
 
   const load = useCallback(async (id: string, preserve = false) => {
+    readonlyReviewApplied.current = false;
     const r = await fetch(`${apiBase}/api/drafts/${id}`); if (!r.ok) return;
     const data = await r.json(); loading.current = true; bulkUndo.current = undefined; bulkUndoApplied.current = undefined; selectedHitsIdentity.current = ''; setSelectedHits([]); setBulkResult(''); setBulkOpen(false); setSwitcher(false); base.current = data.revision; runId.current = r.headers.get('x-editor-run-id') ?? runId.current;
     trailingNewlines.current = data.state.markdown.match(/\n*$/)?.[0] ?? '';
@@ -213,8 +217,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     return () => editor.view.dom.removeEventListener('keydown', fn, true);
   }, [editor]);
 
-  const updateNote = (id: string, body: string) => { const notes = state.current.notes.map(n => n.id === id ? { ...n, body } : n).filter(n => n.body.trim()); setDraft(s => ({ ...s, notes })); dispatch({ type: 'edit' }); planSave(); };
-  const addNote = (index: number) => { const list = blocks(state.current.markdown); const note = { id: randomUUID(), anchor: { blockIndex: index, text: list[index] ?? '' }, body: '' }; setDraft(s => ({ ...s, notes: [...s.notes, note] })); dispatch({ type: 'edit' }); planSave(); setTimeout(() => document.querySelector<HTMLElement>(`[data-note="${note.id}"]`)?.focus(), 0); };
+  const updateNote = (id: string, body: string) => { readonlyReviewApplied.current = false; const notes = state.current.notes.map(n => n.id === id ? { ...n, body } : n).filter(n => n.body.trim()); setDraft(s => ({ ...s, notes })); dispatch({ type: 'edit' }); planSave(); };
+  const addNote = (index: number) => { readonlyReviewApplied.current = false; const list = blocks(state.current.markdown); const note = { id: randomUUID(), anchor: { blockIndex: index, text: list[index] ?? '' }, body: '' }; setDraft(s => ({ ...s, notes: [...s.notes, note] })); dispatch({ type: 'edit' }); planSave(); setTimeout(() => document.querySelector<HTMLElement>(`[data-note="${note.id}"]`)?.focus(), 0); };
   const switchTo = async (id: string) => { if (['dirty', 'failed', 'conflict', 'backupFailed'].includes(status.current.save) && !await save()) return; setSwitcher(false); await load(id); };
   const canLeave = useCallback(() => !['dirty', 'saving', 'failed', 'conflict', 'backupFailed'].includes(status.current.save) || window.confirm('未保存の変更があります。ページを移動しますか？'), []);
   useEffect(() => { setConfirmLeave(canLeave); return () => setConfirmLeave(undefined); }, [canLeave]);
@@ -316,9 +320,9 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     {model.finish === 'finished' ? <section className="completion"><h1>直し終えました</h1><p>編集版を保存しました。</p><p>元の原稿も残っています。</p><p>変更 {(state.current as State & { changedBlocks?: number }).changedBlocks ?? count}か所　理由 {draft.notes.length}件</p>{targets.find(x => !x.finished) && <article className="next"><h2>{targets.find(x => !x.finished)?.title}</h2><p>{targets.find(x => !x.finished)?.medium}・{targets.find(x => !x.finished)?.version}</p><button onClick={() => void switchTo(targets.find(x => !x.finished)!.id)}>次の原稿を開く</button></article>}</section> : <>
       <div className="review-layout"><div className="review-editor"><section className="editor-shell" ref={shellRef}><EditorContent editor={editor} />
       <div className="plus-layer">{!readonly && plusTops.map(p => <button key={p.index} type="button" className={`add-note${p.index === activeBlock || p.index === caretBlock ? ' visible' : ''}`} style={{ top: p.top }} aria-label="理由を書く" onMouseDown={e => e.preventDefault()} onClick={() => addNote(p.index)}>＋</button>)}</div>
-      <div className="notes-layer">{draft.notes.map(note => <label className="note" key={note.id} style={{ top: noteTops[note.id] ?? 0 }}><textarea data-note={note.id} aria-label="理由" value={note.body} onChange={e => updateNote(note.id, e.target.value)} onBlur={e => { if (!e.target.value.trim()) updateNote(note.id, ''); }} /></label>)}</div></section>
+      <div className="notes-layer">{draft.notes.map(note => <label className="note" key={note.id} style={{ top: noteTops[note.id] ?? 0 }}><textarea data-note={note.id} aria-label="理由" disabled={reviewApplyBusy} value={note.body} onChange={e => updateNote(note.id, e.target.value)} onBlur={e => { if (!e.target.value.trim()) updateNote(note.id, ''); }} /></label>)}</div></section>
       <div className="actions"><button disabled={readonly || model.finish === 'finishing'} onClick={() => void finish()}>直し終えた</button></div></div>
-      <ReviewPanel key={target.id} apiBase={apiBase} targetId={target.id} revision={base.current} markdown={draft.markdown} save={save} onAnchors={publishReviewAnchors} onApplied={(markdown, revision) => { base.current = revision; trailingNewlines.current = markdown.endsWith('\n') ? '\n' : ''; setDraft(s => ({ ...s, markdown })); editor.commands.setContent(markdown, { contentType: 'markdown', emitUpdate: false }); dispatch({ type: 'reset' }); }} />
+      <ReviewPanel key={target.id} apiBase={apiBase} targetId={target.id} revision={base.current} markdown={draft.markdown} save={save} onAnchors={publishReviewAnchors} onApplyBusyChange={busy => { setReviewApplyBusy(busy); editor.setEditable(!readonly && !busy); }} onApplied={(markdown, revision) => { loading.current = true; readonlyReviewApplied.current = readonly; base.current = revision; trailingNewlines.current = markdown.endsWith('\n') ? '\n' : ''; setDraft(s => ({ ...s, markdown })); editor.commands.setContent(markdown, { contentType: 'markdown', emitUpdate: false }); dispatch({ type: 'reset' }); queueMicrotask(() => { loading.current = false; }); }} />
       </div>
     </>}
     {selected && !readonly && <div className="selection-tools"><button onMouseDown={e => e.preventDefault()} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}>見出し</button><button onMouseDown={e => e.preventDefault()} onClick={() => editor.chain().focus().toggleBold().run()}>太字</button><button onMouseDown={e => e.preventDefault()} onClick={() => editor.chain().focus().toggleBlockquote().run()}>引用</button><button onMouseDown={e => e.preventDefault()} onClick={() => { const href = prompt('リンク'); if (href) editor.chain().focus().setLink({ href }).run(); }}>リンク</button><button onMouseDown={e => e.preventDefault()} onClick={() => addNote(Math.max(0, editor.state.selection.$from.index(0)))}>理由</button></div>}

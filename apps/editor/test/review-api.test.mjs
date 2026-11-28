@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, cp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, cp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
@@ -16,7 +16,7 @@ const getFreePort = server => new Promise(resolve => server.listen(0, '127.0.0.1
 
 test('review API starts one authenticated run for a saved section, validates output, applies, and restores from disk', async () => {
   const oldUrl = process.env.BRAGI_HERMES_API_URL, oldKey = process.env.BRAGI_HERMES_API_KEY;
-  let runPosts = 0, postHeaders, postBody, eventsLastEventId;
+  let runPosts = 0, postHeaders, postBody, eventsLastEventId, runStatus = 'queued';
   const hermes = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -33,7 +33,7 @@ test('review API starts one authenticated run for a saved section, validates out
       const sectionId = input.match(/section_id=(s-[a-f0-9]+)/)[1];
       const sectionSha = input.match(/section_sha=([a-f0-9]{64})/)[1];
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(json({ run_id: 'fake-run-1', status: 'completed', output: json({ findings: [{ finding_id: 'f1', section_id: sectionId, base_revision: sectionSha, anchor: { quote: '夕方、買い物の帰りに川沿いの道へ回りました。', occurrence: 1 }, category: 'auto', rationale: '文を簡潔にします。', proposal: '夕方、買い物の帰りに川沿いを歩きました。', decision_required: false, source_refs: [] }] }) })); return;
+      res.end(json({ run_id: 'fake-run-1', status: runStatus, ...(runStatus === 'completed' ? { output: json({ findings: [{ finding_id: 'f1', section_id: sectionId, base_revision: sectionSha, anchor: { quote: '夕方、買い物の帰りに川沿いの道へ回りました。', occurrence: 1 }, category: 'auto', rationale: '文を簡潔にします。', proposal: '夕方、買い物の帰りに川沿いを歩きました。', decision_required: false, source_refs: [] }] }) } : {}) })); return;
     }
     res.writeHead(404); res.end();
   });
@@ -60,6 +60,12 @@ test('review API starts one authenticated run for a saved section, validates out
     assert.equal(postHeaders.authorization, `Bearer ${FAKE_KEY}`);
     assert.equal(postHeaders['idempotency-key'], `bragi-review-${session.id}`);
     assert.equal(postBody.input.includes(section.content), true);
+    const sessionFile = path.join(run, '05_final', 'editor', targetId, 'reviews', `${session.id}.json`);
+    const initialStat = await stat(sessionFile);
+    const unchanged = await (await api(`/api/reviews/${session.id}?target=${targetId}`)).json();
+    assert.equal(unchanged.status, 'queued');
+    assert.equal((await stat(sessionFile)).ino, initialStat.ino);
+    runStatus = 'completed';
     const restored = await (await api(`/api/reviews/${session.id}?target=${targetId}`)).json();
     assert.equal(restored.result.state, 'valid');
     assert.equal(restored.result.findings.length, 1);
@@ -89,12 +95,14 @@ test('review API starts one authenticated run for a saved section, validates out
 test('talk starts one continued run and only a completed answer creates a deduplicated draft proposal', async () => {
   const oldUrl = process.env.BRAGI_HERMES_API_URL, oldKey = process.env.BRAGI_HERMES_API_KEY;
   const posts = [];
+
   const hermes = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     if (req.method === 'POST' && req.url === '/v1/runs') {
       const body = JSON.parse(Buffer.concat(chunks).toString());
       const runId = `fake-talk-${posts.length + 1}`;
       posts.push({ body, headers: req.headers, runId });
+
       res.writeHead(202, { 'content-type': 'application/json' }); res.end(json({ run_id: runId, status: 'queued' })); return;
     }
     const match = req.url?.match(/^\/v1\/runs\/(fake-talk-\d+)$/);
@@ -134,15 +142,17 @@ test('talk starts one continued run and only a completed answer creates a dedupl
     assert.equal(initial.result.state, 'valid');
     assert.equal((await api(`/api/reviews/${session.id}/propose?target=review-sample`, { method: 'POST', body: json({ findingId: 'f-decision', answer: 'Keep only the verified detail.' }) })).status, 400);
 
-    const talked = await api(`/api/reviews/${session.id}/talk?target=review-sample`, { method: 'POST', body: json({ message: 'この判断の出典を確認してください。' }) });
-    assert.equal(talked.status, 202);
-    assert.equal(posts.length, 2);
-    assert.equal(posts[1].headers['idempotency-key'], `bragi-review-${session.id}-talk-0`);
+    const talked = await Promise.all(['この判断の出典を確認してください。', '判断に必要な証拠も教えてください。'].map(message => api(`/api/reviews/${session.id}/talk?target=review-sample`, { method: 'POST', body: json({ message }) })));
+    assert.deepEqual(talked.map(response => response.status), [202, 202]);
+    assert.equal(posts.length, 3);
+    assert.deepEqual(new Set(posts.slice(1).map(post => post.headers['idempotency-key'])), new Set([`bragi-review-${session.id}-talk-0`, `bragi-review-${session.id}-talk-1`]));
     assert.equal(typeof posts[0].headers['x-hermes-session-key'], 'string');
     assert.notEqual(posts[0].headers['x-hermes-session-key'], '');
     assert.equal(posts[1].headers['x-hermes-session-key'], posts[0].headers['x-hermes-session-key']);
+    assert.equal(posts[2].headers['x-hermes-session-key'], posts[0].headers['x-hermes-session-key']);
     const answered = await (await api(`/api/reviews/${session.id}?target=review-sample`)).json();
     assert.equal(answered.result.state, 'valid');
+    assert.equal(answered.turns.length, 2);
     const payload = { findingId: 'f-decision', answer: 'Keep only the verified detail.' };
     const first = await api(`/api/reviews/${session.id}/propose?target=review-sample`, { method: 'POST', body: json(payload) });
     assert.equal(first.status, 200);
@@ -160,7 +170,7 @@ test('talk starts one continued run and only a completed answer creates a dedupl
     const retry = await api('/api/reviews/start?target=review-sample', { method: 'POST', body: json({ sectionId: section.section_id, baseRevision: draft.revision }) });
     assert.equal(retry.status, 202);
     assert.equal((await retry.json()).attempt, 2);
-    assert.equal(posts[2].headers['idempotency-key'], `bragi-review-${session.id}-retry-2`);
+    assert.equal(posts[3].headers['idempotency-key'], `bragi-review-${session.id}-retry-2`);
   } finally {
     await new Promise(resolve => server.close(resolve)); await new Promise(resolve => hermes.close(resolve)); await rm(tmp, { recursive: true, force: true });
     if (oldUrl === undefined) delete process.env.BRAGI_HERMES_API_URL; else process.env.BRAGI_HERMES_API_URL = oldUrl;

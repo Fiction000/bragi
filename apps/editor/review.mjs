@@ -114,8 +114,9 @@ export async function updateReviewSession(runDir, targetId, sessionId, update) {
   try {
     const session = await readReviewSession(runDir, targetId, sessionId);
     if (!session) return null;
+    const before = JSON.stringify(session);
     const updated = await update(session);
-    await writeReviewSession(runDir, targetId, updated);
+    if (JSON.stringify(updated) !== before) await writeReviewSession(runDir, targetId, updated);
     return updated;
   } finally {
     release();
@@ -263,21 +264,25 @@ export async function handleReviewApi({ req, res, apiPath, runDir, targets, curr
   }
   if (req.method === 'POST' && action === 'apply') {
     const body = await readBody(req);
-    if (session.result?.state !== 'valid') return send(res, 409, { error: '有効なレビュー結果がありません' });
-    const finding = session.result.findings.find(item => item.finding_id === body.findingId);
-    if (!finding || session.decisions.some(item => item.findingId === finding.finding_id)) return send(res, 404, { error: 'Finding unavailable' });
-    const draft = await current();
-    let applied;
-    try { applied = applyFinding(draft.state.markdown, finding); }
-    catch (error) { if (error.status === 409) return send(res, 409, { error: error.message, code: 'stale' }); throw error; }
-    const state = { ...draft.state, markdown: applied.markdown };
-    const saved = await saveDraft(target, state, draft.revision);
-    if (!saved.saved) return send(res, 409, { error: '本文が更新されています', code: 'stale', revision: saved.revision });
-    await updateReviewSession(runDir, targetId, id, latest => {
-      latest.decisions.push({ findingId: finding.finding_id, action: 'applied', at: new Date().toISOString() });
-      return latest;
-    });
-    return send(res, 200, { revision: saved.revision, markdown: state.markdown });
+    let outcome;
+    try {
+      await updateReviewSession(runDir, targetId, id, async latest => {
+        if (latest.result?.state !== 'valid') { outcome = { status: 409, body: { error: '有効なレビュー結果がありません' } }; return latest; }
+        const finding = latest.result.findings.find(item => item.finding_id === body.findingId);
+        if (!finding || latest.decisions.some(item => item.findingId === finding.finding_id) || latest.status === 'discarded') { outcome = { status: 404, body: { error: 'Finding unavailable' } }; return latest; }
+        const draft = await current();
+        let applied;
+        try { applied = applyFinding(draft.state.markdown, finding); }
+        catch (error) { if (error.status === 409) { outcome = { status: 409, body: { error: error.message, code: 'stale' } }; return latest; } throw error; }
+        const state = { ...draft.state, markdown: applied.markdown };
+        const saved = await saveDraft(target, state, draft.revision);
+        if (!saved.saved) { outcome = { status: 409, body: { error: '本文が更新されています', code: 'stale', revision: saved.revision } }; return latest; }
+        latest.decisions.push({ findingId: finding.finding_id, action: 'applied', at: new Date().toISOString() });
+        outcome = { status: 200, body: { revision: saved.revision, markdown: state.markdown } };
+        return latest;
+      });
+    } catch (error) { if (error.status === 409) return send(res, 409, { error: error.message, code: 'stale' }); throw error; }
+    return send(res, outcome?.status ?? 404, outcome?.body ?? { error: 'Review session not found' });
   }
   if (req.method === 'POST' && action === 'discard') {
     const body = await readBody(req);
@@ -291,7 +296,7 @@ export async function handleReviewApi({ req, res, apiPath, runDir, targets, curr
     }
     if (!session.result?.findings?.some(item => item.finding_id === body.findingId)) return send(res, 404, { error: 'Finding unavailable' });
     session = await updateReviewSession(runDir, targetId, id, latest => {
-      if (!latest.result?.findings?.some(item => item.finding_id === body.findingId)) return latest;
+      if (!latest.result?.findings?.some(item => item.finding_id === body.findingId) || latest.decisions.some(item => item.findingId === body.findingId)) return latest;
       latest.decisions.push({ findingId: body.findingId, action: 'discarded', at: new Date().toISOString() });
       return latest;
     });
@@ -300,13 +305,16 @@ export async function handleReviewApi({ req, res, apiPath, runDir, targets, curr
   if (req.method === 'POST' && action === 'talk') {
     const body = await readBody(req);
     if (typeof body.message !== 'string' || !body.message.trim() || body.message.length > 4000) return send(res, 400, { error: 'Message must be 1-4000 characters' });
-    const turn = session.turns.length;
-    const launched = await startAgentReview(config, { section: { heading: session.heading, section_id: session.section_id, section_sha: session.section_sha, content: session.section_content }, target, idempotencyKey: `bragi-review-${id}-talk-${turn}`, conversationKey: session.conversationKey, instruction: `Continue the review conversation. The reviewed section is fixed to sha ${session.section_sha}. Respond with the structured review JSON contract, and include any reply in rationale. User: ${body.message}` });
-    session = await updateReviewSession(runDir, targetId, id, latest => {
+    let rejected = false;
+    session = await updateReviewSession(runDir, targetId, id, async latest => {
+      if (latest.status === 'discarded') { rejected = true; return latest; }
+      const turn = latest.turns.length;
+      const launched = await startAgentReview(config, { section: { heading: latest.heading, section_id: latest.section_id, section_sha: latest.section_sha, content: latest.section_content }, target, idempotencyKey: `bragi-review-${id}-talk-${turn}`, conversationKey: latest.conversationKey, instruction: `Continue the review conversation. The reviewed section is fixed to sha ${latest.section_sha}. Respond with the structured review JSON contract, and include any reply in rationale. User: ${body.message}` });
       latest.turns.push({ message: body.message, runId: launched.runId, status: launched.status, at: new Date().toISOString() });
       latest.runId = launched.runId; latest.status = launched.status; latest.result = null;
       return latest;
     });
+    if (rejected) return send(res, 409, { error: 'Review session was discarded' });
     return send(res, 202, session);
   }
   if (req.method === 'POST' && action === 'propose') {

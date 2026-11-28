@@ -83,6 +83,7 @@ test('review with agent stays section-scoped, applies valid findings, shows stal
     await page.getByRole('button', { name: '採る' }).first().click();
     await expect(page.getByRole('combobox', { name: 'レビューする節' })).toBeDisabled();
     await expect(page.getByRole('button', { name: '採る' }).first()).toBeDisabled();
+    await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
     releaseApply();
     await expect(page.locator('.ProseMirror')).toContainText('First sentence is clearer.');
     await page.unroute('**/api/reviews/*/apply?*');
@@ -102,12 +103,13 @@ test('review with agent stays section-scoped, applies valid findings, shows stal
 
     await page.reload();
     await page.getByRole('button', { name: '最新版で再レビュー' }).click();
-    await expect(page.getByText('First sentence is clearer.')).toBeVisible();
+    await expect(page.locator('.review-current').first()).toHaveText('現在: First sentence changed elsewhere.');
     draft = await (await api(`/api/drafts/${targetId}`)).json();
     const changed = draft.state.markdown.replace('First sentence changed elsewhere.', 'First sentence changed again.');
     await api(`/api/drafts/${targetId}`, { method: 'PUT', body: json({ baseRevision: draft.revision, state: { ...draft.state, markdown: changed } }) });
     await page.reload();
     await expect(page.getByText('節が更新されています')).toBeVisible();
+    await expect(page.locator('#review-message')).toHaveCount(0);
     await expect(page.locator('.review-anchor-widget')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '最新版で再レビュー' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'この案を捨てる' })).toBeVisible();

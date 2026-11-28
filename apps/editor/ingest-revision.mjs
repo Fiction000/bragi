@@ -91,6 +91,16 @@ function validateEvent(event) {
 export async function ingestRevision(event, { draftsRoot, workflowRoot, now = new Date() }) {
   validateEvent(event);
   const root = await fs.realpath(draftsRoot);
+  const eventDir = path.join(root, '.bragi-ingest-events');
+  const eventFile = path.join(eventDir, `${event.event_id}.json`);
+  const requestHash = hash(Buffer.from(stableJson(event)));
+  try {
+    const info = await fs.lstat(eventDir);
+    if (info.isSymbolicLink() || !inside(root, await fs.realpath(eventDir))) throw new Error('Ingest event store escapes drafts root');
+    const prior = JSON.parse((await readRegularFile(eventDir, `${event.event_id}.json`)).toString('utf8'));
+    if (prior.requestHash !== requestHash) throw new Error('Event ID reused with different content');
+    return { ...prior.result, created: false };
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const sourceRoot = await fs.realpath(workflowRoot);
   const artifact = await rejectLinkedPath(sourceRoot, event.artifact_ref);
   const bytes = await fs.readFile(artifact);
@@ -103,11 +113,8 @@ export async function ingestRevision(event, { draftsRoot, workflowRoot, now = ne
   const finished = JSON.parse(await readRegularFile(parent, path.join('05_final', 'editor', event.target_id, 'finished.json')).then(bytes => bytes.toString('utf8')));
   if (finished.finalSha256 !== event.source_sha256) throw new Error('source_sha256 does not match parent finished revision');
 
-  const eventDir = path.join(root, '.bragi-ingest-events');
   await fs.mkdir(eventDir, { recursive: true });
   if ((await fs.lstat(eventDir)).isSymbolicLink() || !inside(root, await fs.realpath(eventDir))) throw new Error('Ingest event store escapes drafts root');
-  const eventFile = path.join(eventDir, `${event.event_id}.json`);
-  const requestHash = hash(Buffer.from(stableJson(event)));
   const releaseEventLock = await acquireLock(eventDir, `event-${event.event_id}`);
   try {
     try {

@@ -147,6 +147,12 @@ test('revision ingest creates a separate run once and leaves the parent run unch
     assert.equal(first.created, true);
     assert.equal(second.created, false);
     assert.equal(first.runKey, second.runKey);
+    const artifactBytes = await readFile(artifact);
+    await rm(artifact);
+    const duplicateAfterArtifactRemoval = await ingestRevision(reordered, { draftsRoot: drafts, workflowRoot: tmp });
+    assert.equal(duplicateAfterArtifactRemoval.created, false);
+    assert.equal(duplicateAfterArtifactRemoval.runKey, first.runKey);
+    await writeFile(artifact, artifactBytes);
     await rm(path.join(drafts, '.bragi-ingest-events', `${event.event_id}.json`));
     const recovered = await ingestRevision(reordered, { draftsRoot: drafts, workflowRoot: tmp });
     assert.equal(recovered.created, false);
@@ -299,6 +305,23 @@ test('server restart retries a persisted pending outbox with the same delivery I
   await writeFile(outboxFile, JSON.stringify({ event, status: 'pending', attempts: 0 }));
   const sent = [];
   const server = await createEditorServer({ draftsRoot: drafts, port: 0, github: null, taskNotesDir: null, webhookUrl: 'http://127.0.0.1:9121/webhooks/bragi', webhookSecret: 'secret', webhookFetch: async (_url, init) => { sent.push(init.headers['X-Request-ID']); return new Response(null, { status: 202 }); } });
+  try {
+    for (let i = 0; i < 30 && JSON.parse(await readFile(outboxFile, 'utf8')).status !== 'sent'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(sent, [event.event_id]);
+    assert.equal(JSON.parse(await readFile(outboxFile, 'utf8')).status, 'sent');
+  } finally { await new Promise(resolve => server.close(resolve)); await rm(tmp, { recursive: true, force: true }); }
+});
+
+test('run-only server retries a persisted pending outbox at startup', async () => {
+  const tmp = await temp();
+  const run = path.join(tmp, 'editor-run-v1');
+  const outboxFile = path.join(run, '05_final', 'editor', 'market-note', 'finished-event.json');
+  const event = { schema_version: 1, event_id: '6f253e54-77fb-4b25-9e70-0c168c3fa4d1', event_type: 'bragi.editor.finished' };
+  await cp(fixture, run, { recursive: true });
+  await mkdir(path.dirname(outboxFile), { recursive: true });
+  await writeFile(outboxFile, JSON.stringify({ event, status: 'pending', attempts: 0 }));
+  const sent = [];
+  const server = await createEditorServer({ run, port: 0, webhookUrl: 'http://127.0.0.1:9121/webhooks/bragi', webhookSecret: 'secret', webhookFetch: async (_url, init) => { sent.push(init.headers['X-Request-ID']); return new Response(null, { status: 202 }); } });
   try {
     for (let i = 0; i < 30 && JSON.parse(await readFile(outboxFile, 'utf8')).status !== 'sent'; i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.deepEqual(sent, [event.event_id]);

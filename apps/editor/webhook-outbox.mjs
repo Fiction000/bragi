@@ -114,20 +114,22 @@ export async function createFinishedEvent({ runDir, target, runId, record, event
 
 export async function listPendingOutboxes(root) {
   const output = [];
+  const inspectRun = async runDir => {
+    const outbox = path.join(runDir, '05_final', 'editor');
+    let targets;
+    try { targets = await fs.readdir(outbox, { withFileTypes: true }); } catch { targets = []; }
+    for (const target of targets) if (target.isDirectory()) {
+      const file = path.join(outbox, target.name, 'finished-event.json');
+      try { if (JSON.parse(await fs.readFile(file, 'utf8')).status === 'pending') output.push(file); } catch {}
+    }
+  };
   const visit = async dir => {
+    await inspectRun(dir);
     let entries;
     try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-      const child = path.join(dir, entry.name);
-      const outbox = path.join(child, '05_final', 'editor');
-      let targets;
-      try { targets = await fs.readdir(outbox, { withFileTypes: true }); } catch { targets = []; }
-      for (const target of targets) if (target.isDirectory()) {
-        const file = path.join(outbox, target.name, 'finished-event.json');
-        try { if (JSON.parse(await fs.readFile(file, 'utf8')).status === 'pending') output.push(file); } catch {}
-      }
-      await visit(child);
+      await visit(path.join(dir, entry.name));
     }
   };
   await visit(await fs.realpath(root));

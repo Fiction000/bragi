@@ -346,8 +346,9 @@ export async function createEditorServer({ run: runPath, draftsRoot, port = PORT
       response(res, error.status ?? 500, { error: error.message });
     }
   });
-  if (webhookEnabled && dashboard) {
-    void listPendingOutboxes(draftsRoot).then(files => Promise.all(files.map(file => sendOutboxEvent({ file, url: webhookUrl, signingKey: webhookSecret, fetchImpl: webhookFetch })))).catch(() => {});
+  if (webhookEnabled) {
+    const outboxRoot = draftsRoot ?? runDir;
+    void listPendingOutboxes(outboxRoot).then(files => Promise.all(files.map(file => sendOutboxEvent({ file, url: webhookUrl, signingKey: webhookSecret, fetchImpl: webhookFetch })))).catch(() => {});
   }
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   return server;

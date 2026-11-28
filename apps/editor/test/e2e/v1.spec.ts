@@ -10,10 +10,27 @@ const fixture = path.resolve('test/fixtures/run');
 const contexts = [];
 let server, run, tmp, port, context, page;
 
-async function start() {
+async function start(custom = false) {
   tmp = await mkdtemp(path.join(os.tmpdir(), 'wle-e2e-'));
   run = path.join(tmp, 'run');
   await cp(fixture, run, { recursive: true });
+  if (custom) {
+    const original = `---
+title: Bulk Replace Fixture
+---
+Claude Code skill.
+
+A Skill helps.
+
+Use \`skills/list\`.
+
+\`\`\`json
+{"skills":"skill"}
+\`\`\`
+`;
+    await writeFile(path.join(run, '05_final', 'bulk-original.md'), original);
+    await writeFile(path.join(run, 'editor-targets.json'), JSON.stringify({ targets: [{ id: 'bulkreplace', title: 'Bulk Replace Fixture', medium: 'Zenn', version: 'review', source: '05_final/bulk-original.md' }] }));
+  }
   server = await createEditorServer({ run, port: 0 });
   port = server.address().port;
 }
@@ -226,4 +243,39 @@ test('19 links use the paper ink color, not the browser default blue', async () 
   const link = editor().locator('a').first();
   await expect(link).toBeVisible();
   expect(await link.evaluate(el => getComputedStyle(el).color)).toBe('rgb(48, 45, 40)');
+});
+
+test('20 bulk replacement saves selected prose only and one undo restores exact fixture bytes', async ({ browser: browserFixture }) => {
+  await stop();
+  await start(true);
+  await browser(browserFixture);
+  const original = await readFile(path.join(run, '05_final/bulk-original.md'));
+  await page.keyboard.press('Meta+Shift+h');
+  const dialog = page.getByRole('dialog', { name: '検索・置換' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel('検索語').fill('skill');
+  await dialog.getByLabel('置換後').fill('スキル');
+  await expect(dialog.getByText('該当 2 件')).toBeVisible();
+  await dialog.getByRole('checkbox', { name: '置換候補 2' }).uncheck();
+  await dialog.getByRole('button', { name: '選択した 1 件を置換' }).click();
+  await expect(dialog.getByText('1件を置換しました。')).toBeVisible();
+  await expect(editor().locator('[data-changed="true"]')).toHaveCount(1);
+  await waitSaved();
+  const saved = Buffer.from(`---
+title: Bulk Replace Fixture
+---
+Claude Code スキル.
+
+A Skill helps.
+
+Use \`skills/list\`.
+
+\`\`\`json
+{"skills":"skill"}
+\`\`\`
+`);
+  expect(await readFile(path.join(run, '05_final/editor/bulkreplace/nat-final.md'))).toEqual(saved);
+  await dialog.getByRole('button', { name: '元に戻す' }).click();
+  await waitSaved();
+  expect(await readFile(path.join(run, '05_final/editor/bulkreplace/nat-final.md'))).toEqual(original);
 });

@@ -94,6 +94,46 @@ test('8 edit, autosave, reload, note persistence and changed-block marker', asyn
   expect(await readFile(path.join(run, source))).toEqual(original);
 });
 
+test('undo keys defer during IME composition and are ignored in readonly mode', async ({ browser: browserFixture }) => {
+  const paragraph = editor().locator('p').first();
+  await paragraph.click(); await page.keyboard.press('End'); await page.keyboard.insertText('composition-guard');
+  const before = await editor().innerText();
+  const dispatch = (init: { ctrlKey?: boolean; metaKey?: boolean; isComposing?: boolean; keyCode?: number; altKey?: boolean }) => editor().evaluate((node, init) => {
+    const event = new KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true, ...init });
+    if ('keyCode' in init) Object.defineProperty(event, 'keyCode', { value: init.keyCode });
+    node.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, init);
+  expect(await dispatch({ ctrlKey: true, isComposing: true })).toBe(false);
+  expect(await editor().innerText()).toBe(before);
+  expect(await dispatch({ metaKey: true, isComposing: true })).toBe(false);
+  expect(await editor().innerText()).toBe(before);
+  expect(await dispatch({ ctrlKey: true, keyCode: 229 })).toBe(false);
+  expect(await editor().innerText()).toBe(before);
+  expect(await dispatch({ ctrlKey: true, altKey: true })).toBe(false);
+  expect(await editor().innerText()).toBe(before);
+
+  await stop();
+  await start([
+    { id: 'editable-before-readonly', title: 'Editable history', medium: 'Zenn', version: 'review', source: 'editable.md', markdown: 'Editable starting text.' },
+    { id: 'readonly-after-edit', title: 'Readonly after edit', medium: 'Zenn', version: 'review', source: 'readonly.md', markdown: 'Readonly history marker.\n\n| unsupported | syntax |\n| --- | --- |' },
+  ]);
+  await browser(browserFixture);
+  const editable = editor().locator('p').first();
+  await editable.click(); await page.keyboard.press('End'); await page.keyboard.insertText(' editable-history');
+  await waitSaved();
+  await page.getByRole('button', { name: /Editable history/ }).click();
+  await page.getByRole('dialog', { name: /原稿を開く/ }).getByRole('button', { name: /Readonly after edit/ }).click();
+  await expect(page.locator('.unsupported')).toBeVisible();
+  await expect(editor()).toHaveAttribute('contenteditable', 'false');
+  const readonlyText = await editor().innerText();
+  expect(readonlyText).toContain('Readonly history marker.');
+  expect(await dispatch({ ctrlKey: true })).toBe(false);
+  expect(await editor().innerText()).toBe(readonlyText);
+  expect(await dispatch({ metaKey: true })).toBe(false);
+  expect(await editor().innerText()).toBe(readonlyText);
+});
+
 test('⌘Z and ⌘⇧Z undo and redo saved article text', async () => {
   const article = editor().locator('p').first();
   await article.click();
@@ -103,7 +143,7 @@ test('⌘Z and ⌘⇧Z undo and redo saved article text', async () => {
   await page.keyboard.press('Meta+z');
   await waitSaved();
   await expect(editor()).not.toContainText('履歴回帰確認');
-  await expect((await readFile(path.join(run, '05_final/editor/kawazoi/nat-final.md'), 'utf8'))).not.toContain('履歴回帰確認');
+  expect(await readFile(path.join(run, '05_final/editor/kawazoi/nat-final.md'), 'utf8')).not.toContain('履歴回帰確認');
   await page.keyboard.press('Meta+Shift+z');
   await waitSaved();
   await expect(editor()).toContainText('履歴回帰確認');
@@ -115,6 +155,24 @@ test('⌘Z and ⌘⇧Z undo and redo saved article text', async () => {
   await waitSaved();
   await expect(editor()).toContainText('履歴回帰確認');
   expect(await readFile(path.join(run, '05_final/editor/kawazoi/nat-final.md'), 'utf8')).toContain('履歴回帰確認');
+});
+
+test('one undo or redo shortcut advances exactly one history group', async () => {
+  const paragraph = editor().locator('p').first();
+  const append = async (text: string) => {
+    await paragraph.click(); await page.keyboard.press('End'); await page.keyboard.insertText(text); await waitSaved();
+  };
+  const undoAndRedo = async (undo: string, redo: string) => {
+    await page.keyboard.press(undo); await expect(editor()).toContainText('undo-step-one'); await expect(editor()).not.toContainText('undo-step-two');
+    await page.keyboard.press(undo); await expect(editor()).not.toContainText('undo-step-one'); await expect(editor()).not.toContainText('undo-step-two');
+    await page.keyboard.press(redo); await expect(editor()).toContainText('undo-step-one'); await expect(editor()).not.toContainText('undo-step-two');
+    await page.keyboard.press(redo); await expect(editor()).toContainText('undo-step-two');
+  };
+  await append(' undo-step-one');
+  await page.waitForTimeout(700);
+  await append(' undo-step-two');
+  await undoAndRedo('Meta+z', 'Meta+Shift+z');
+  await undoAndRedo('Control+z', 'Control+Shift+z');
 });
 
 

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
-import { signWebhook, validateWebhookUrl, sendOutboxEvent } from '../webhook-outbox.mjs';
+import { signWebhook, verifyWebhookSignature, validateWebhookUrl, sendOutboxEvent } from '../webhook-outbox.mjs';
 import { ingestRevision } from '../ingest-revision.mjs';
 import { createEditorServer } from '../server.mjs';
 import { listEditorRuns } from '@wle/core';
@@ -31,6 +31,9 @@ test('V2 signature matches timestamp-dot-raw-body and rejects stale timestamps',
   const signed = signWebhook(body, 'secret', timestamp);
   assert.equal(signed['X-Webhook-Timestamp'], timestamp);
   assert.equal(signed['X-Webhook-Signature-V2'], createHmac('sha256', 'secret').update(timestamp + '.' + body).digest('hex'));
+  assert.equal(verifyWebhookSignature(body, 'secret', { 'x-webhook-timestamp': timestamp, 'x-webhook-signature-v2': signed['X-Webhook-Signature-V2'] }), true);
+  assert.equal(verifyWebhookSignature(Buffer.from('tampered'), 'secret', { 'x-webhook-timestamp': timestamp, 'x-webhook-signature-v2': signed['X-Webhook-Signature-V2'] }), false);
+  assert.equal(validateWebhookUrl('http://[::1]:9121/webhooks/bragi'), 'http://[::1]:9121/webhooks/bragi');
   assert.throws(() => signWebhook(body, 'secret', '1'), /timestamp/i);
 });
 
@@ -87,9 +90,32 @@ test('outbox retries transient failures five times after the initial attempt', a
     assert.equal(result.attempts, 6);
     assert.equal(requests, 6);
     assert.deepEqual(waits, [60_000, 120_000, 240_000, 480_000, 960_000]);
+    const staleFile = path.join(tmp, 'stale.json');
+    await writeFile(staleFile, JSON.stringify({ event: { event_id: '8a4b38e1-15b2-42fb-a678-f0f7c25e9754' }, attempts: 6, status: 'pending' }));
+    const stale = await sendOutboxEvent({ file: staleFile, url: 'http://127.0.0.1:1/hook', signingKey: 'secret', sleep: async () => {}, fetchImpl: async () => { requests++; return new Response(null, { status: 503 }); } });
+    assert.equal(stale.status, 'exhausted');
+    assert.equal(requests, 6);
   } finally { await rm(tmp, { recursive: true, force: true }); }
 });
 
+
+test('concurrent sends share one delivery for an outbox file', async () => {
+  const tmp = await temp();
+  const file = path.join(tmp, 'outbox.json');
+  let release;
+  let requests = 0;
+  const blocked = new Promise(resolve => { release = resolve; });
+  await writeFile(file, JSON.stringify({ event: { event_id: '8a4b38e1-15b2-42fb-a678-f0f7c25e9754' }, attempts: 0, status: 'pending' }));
+  try {
+    const options = { file, url: 'http://127.0.0.1:1/hook', signingKey: 'secret', fetchImpl: async () => { requests++; await blocked; return new Response(null, { status: 202 }); } };
+    const first = sendOutboxEvent(options);
+    const second = sendOutboxEvent(options);
+    assert.equal(first, second);
+    release();
+    assert.equal((await first).status, 'sent');
+    assert.equal(requests, 1);
+  } finally { release(); await rm(tmp, { recursive: true, force: true }); }
+});
 
 test('revision ingest creates a separate run once and leaves the parent run unchanged', async () => {
   const tmp = await temp();
@@ -110,11 +136,21 @@ test('revision ingest creates a separate run once and leaves the parent run unch
     await writeFile(artifact, '# Agent revision\n');
     const event = { event_type: 'bragi.agent.revision_ready', event_id: 'a350fb95-b3eb-44b9-bda4-ec6aa700e885', workflow_id: 'workflow-1', parent_event_id: '8a4b38e1-15b2-42fb-a678-f0f7c25e9754', slug: 'story', editor_run: 'story/editor-run-v1', target_id: targetId, artifact_ref: 'writer/revision.md', sha256: hash(await readFile(artifact)), source_sha256: 'a'.repeat(64), label: 'Agent revision' };
     const before = await treeBytes(run);
-    const first = await ingestRevision(event, { draftsRoot: drafts, workflowRoot: tmp });
-    const second = await ingestRevision(event, { draftsRoot: drafts, workflowRoot: tmp });
+    const reordered = Object.fromEntries(Object.entries(event).reverse());
+    const results = await Promise.all([
+      ingestRevision(event, { draftsRoot: drafts, workflowRoot: tmp }),
+      ingestRevision(reordered, { draftsRoot: drafts, workflowRoot: tmp }),
+    ]);
+    assert.notEqual(results[0].created, results[1].created);
+    const first = results.find(result => result.created);
+    const second = results.find(result => !result.created);
     assert.equal(first.created, true);
     assert.equal(second.created, false);
     assert.equal(first.runKey, second.runKey);
+    await rm(path.join(drafts, '.bragi-ingest-events', `${event.event_id}.json`));
+    const recovered = await ingestRevision(reordered, { draftsRoot: drafts, workflowRoot: tmp });
+    assert.equal(recovered.created, false);
+    assert.equal(recovered.runKey, first.runKey);
     assert.deepEqual(await treeBytes(run), before);
     const newRun = path.join(slugDir, 'editor-run-v2');
     assert.equal(await readFile(path.join(newRun, '05_final', 'agent-revision.md'), 'utf8'), '# Agent revision\n');
@@ -149,6 +185,30 @@ test('revision CLI emits its JSON result and rejects missing roots', async () =>
     const result = spawnSync(process.execPath, [cli, '--event', eventFile, '--workflow-root', workflow, '--drafts-root', drafts], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).created, true);
+  } finally { await rm(tmp, { recursive: true, force: true }); }
+});
+
+test('revision ingest rejects symlinked parent metadata before creating any run', async () => {
+  const tmp = await temp();
+  const drafts = path.join(tmp, 'drafts');
+  const run = path.join(drafts, 'story', 'editor-run-v1');
+  const workflow = path.join(tmp, 'workflow');
+  const artifact = path.join(workflow, 'revision.md');
+  try {
+    await cp(fixture, run, { recursive: true });
+    const targetId = JSON.parse(await readFile(path.join(run, 'editor-targets.json'), 'utf8')).targets[0].id;
+    await mkdir(path.join(run, '05_final', 'editor', targetId), { recursive: true });
+    await writeFile(path.join(run, '05_final', 'editor', targetId, 'finished.json'), JSON.stringify({ finalSha256: 'a'.repeat(64) }));
+    await mkdir(workflow, { recursive: true });
+    await writeFile(artifact, 'revision');
+    const event = { event_type: 'bragi.agent.revision_ready', event_id: 'aa23ca82-1fed-47a2-ad6f-f43d03c58589', workflow_id: 'workflow', parent_event_id: '8a4b38e1-15b2-42fb-a678-f0f7c25e9754', slug: 'story', editor_run: 'story/editor-run-v1', target_id: targetId, artifact_ref: 'revision.md', sha256: hash(await readFile(artifact)), source_sha256: 'a'.repeat(64), label: 'Agent revision' };
+    const listing = path.join(run, 'editor-targets.json');
+    const external = path.join(tmp, 'external-targets.json');
+    await writeFile(external, await readFile(listing));
+    await rm(listing);
+    await symlink(external, listing);
+    await assert.rejects(ingestRevision(event, { draftsRoot: drafts, workflowRoot: workflow }), /symlink|regular file/i);
+    assert.deepEqual((await readdir(path.join(drafts, 'story'))).filter(name => /^editor-run-v/.test(name)), ['editor-run-v1']);
   } finally { await rm(tmp, { recursive: true, force: true }); }
 });
 

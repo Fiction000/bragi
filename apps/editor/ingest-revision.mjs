@@ -23,11 +23,60 @@ async function rejectLinkedPath(root, relative) {
   return real;
 }
 
+async function readRegularFile(root, relative) {
+  let current = root;
+  const parts = relative.split(path.sep);
+  for (let i = 0; i < parts.length; i++) {
+    current = path.join(current, parts[i]);
+    const info = await fs.lstat(current);
+    if (info.isSymbolicLink() || (i === parts.length - 1 ? !info.isFile() : !info.isDirectory())) throw new Error('Run metadata path is not a regular file');
+  }
+  return fs.readFile(current);
+}
+
 async function atomicWrite(file, bytes) {
   const temp = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
-  await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o600 });
-  await fs.link(temp, file);
-  await fs.unlink(temp);
+  try {
+    await fs.writeFile(temp, bytes, { flag: 'wx', mode: 0o600 });
+    await fs.link(temp, file);
+  } finally { await fs.rm(temp, { force: true }); }
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+
+async function acquireLock(dir, name) {
+  const file = path.join(dir, `${name}.lock`);
+  const token = `${process.pid}:${Math.random().toString(16).slice(2)}`;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    try {
+      const handle = await fs.open(file, 'wx', 0o600);
+      try { await handle.writeFile(token); } finally { await handle.close(); }
+      return async () => {
+        try { if (await fs.readFile(file, 'utf8') === token) await fs.unlink(file); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+      };
+    } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    let info;
+    try { info = await fs.lstat(file); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (info.isSymbolicLink()) throw new Error('Ingest lock is a symlink');
+    let stale = Date.now() - info.mtimeMs > 5_000;
+    try {
+      const pid = Number((await fs.readFile(file, 'utf8')).split(':')[0]);
+      if (Number.isInteger(pid) && pid > 0) {
+        try { process.kill(pid, 0); stale = false; }
+        catch (error) { stale = error.code === 'ESRCH'; }
+      }
+    } catch (error) { if (error.code !== 'ENOENT') stale = Date.now() - info.mtimeMs > 5_000; }
+    if (stale) { await fs.rm(file, { force: true }); continue; }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  throw new Error('Timed out waiting for revision ingest lock');
 }
 
 function validateEvent(event) {
@@ -48,48 +97,73 @@ export async function ingestRevision(event, { draftsRoot, workflowRoot, now = ne
   if (hash(bytes) !== event.sha256) throw new Error('Revision SHA-256 mismatch');
   const parent = path.resolve(root, event.editor_run);
   if (!inside(root, parent) || await fs.realpath(parent) !== parent) throw new Error('Parent run path escapes drafts root or contains a symlink');
-  const listing = JSON.parse(await fs.readFile(path.join(parent, 'editor-targets.json'), 'utf8'));
+  const listing = JSON.parse(await readRegularFile(parent, 'editor-targets.json').then(bytes => bytes.toString('utf8')));
   const target = listing.targets?.find(item => item.id === event.target_id);
   if (!target) throw new Error('Unknown parent target');
-  const finishFile = path.join(parent, '05_final', 'editor', event.target_id, 'finished.json');
-  const finished = JSON.parse(await fs.readFile(finishFile, 'utf8'));
+  const finished = JSON.parse(await readRegularFile(parent, path.join('05_final', 'editor', event.target_id, 'finished.json')).then(bytes => bytes.toString('utf8')));
   if (finished.finalSha256 !== event.source_sha256) throw new Error('source_sha256 does not match parent finished revision');
 
   const eventDir = path.join(root, '.bragi-ingest-events');
   await fs.mkdir(eventDir, { recursive: true });
   if ((await fs.lstat(eventDir)).isSymbolicLink() || !inside(root, await fs.realpath(eventDir))) throw new Error('Ingest event store escapes drafts root');
   const eventFile = path.join(eventDir, `${event.event_id}.json`);
-  const requestHash = hash(Buffer.from(JSON.stringify({ ...event, sha256: hash(bytes) })));
+  const requestHash = hash(Buffer.from(stableJson(event)));
+  const releaseEventLock = await acquireLock(eventDir, `event-${event.event_id}`);
   try {
-    const prior = JSON.parse(await fs.readFile(eventFile, 'utf8'));
-    if (prior.requestHash !== requestHash) throw new Error('Event ID reused with different content');
-    return { ...prior.result, created: false };
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    try {
+      const prior = JSON.parse((await readRegularFile(eventDir, `${event.event_id}.json`)).toString('utf8'));
+      if (prior.requestHash !== requestHash) throw new Error('Event ID reused with different content');
+      return { ...prior.result, created: false };
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
 
-  const slugDir = path.join(root, event.slug);
-  await fs.mkdir(slugDir, { recursive: true });
-  const slugInfo = await fs.lstat(slugDir);
-  if (slugInfo.isSymbolicLink() || !inside(root, await fs.realpath(slugDir))) throw new Error('Article folder escapes drafts root');
-  const entries = await fs.readdir(slugDir, { withFileTypes: true });
-  let max = 0;
-  for (const entry of entries) {
-    const match = /^editor-run-v([1-9]\d*)$/.exec(entry.name);
-    if (entry.isDirectory() && match) max = Math.max(max, Number(match[1]));
-  }
-  const runName = `editor-run-v${max + 1}`;
-  const runDir = path.join(slugDir, runName);
-  await fs.mkdir(runDir, { mode: 0o700 });
-  await fs.mkdir(path.join(runDir, '05_final'), { recursive: true });
-  const artifactName = 'agent-revision.md';
-  await atomicWrite(path.join(runDir, '05_final', artifactName), bytes);
-  const newTarget = { ...target, version: event.label, source: `05_final/${artifactName}`, finished: false, agentRevision: true, verified: false };
-  await atomicWrite(path.join(runDir, 'editor-targets.json'), Buffer.from(JSON.stringify({ targets: [newTarget] }, null, 2) + '\n'));
-  await atomicWrite(path.join(runDir, 'editor-source-sha256-before.txt'), Buffer.from(`${event.sha256}  ${artifactName}\n`));
-  const relPath = path.relative(root, runDir).split(path.sep).join('/');
-  const runKey = Buffer.from(relPath).toString('base64url');
-  const result = { created: true, runKey, relPath, path: `/r/${runKey}/`, notice: `エージェントの新しい版が届きました。${target.title} ${event.label} /r/${runKey}/` };
-  await atomicWrite(eventFile, Buffer.from(JSON.stringify({ requestHash, result, createdAt: now.toISOString() }, null, 2) + '\n'));
-  return result;
+    const slugDir = path.join(root, event.slug);
+    await fs.mkdir(slugDir, { recursive: true });
+    const slugInfo = await fs.lstat(slugDir);
+    if (slugInfo.isSymbolicLink() || !inside(root, await fs.realpath(slugDir))) throw new Error('Article folder escapes drafts root');
+    const releaseSlugLock = await acquireLock(eventDir, `slug-${event.slug}`);
+    try {
+      for (const entry of await fs.readdir(slugDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^editor-run-v[1-9]\d*$/.test(entry.name)) continue;
+        try {
+          const saved = JSON.parse((await readRegularFile(slugDir, path.join(entry.name, '.bragi-agent-ingest.json'))).toString('utf8'));
+          if (saved.eventId === event.event_id) {
+            if (saved.requestHash !== requestHash) throw new Error('Event ID reused with different content');
+            await atomicWrite(eventFile, Buffer.from(JSON.stringify({ requestHash, result: saved.result, createdAt: now.toISOString() }, null, 2) + '\n'));
+            return { ...saved.result, created: false };
+          }
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      const entries = await fs.readdir(slugDir, { withFileTypes: true });
+      let max = 0;
+      for (const entry of entries) {
+        const match = /^editor-run-v([1-9]\d*)$/.exec(entry.name);
+        if (entry.isDirectory() && match) max = Math.max(max, Number(match[1]));
+      }
+      const runName = `editor-run-v${max + 1}`;
+      const runDir = path.join(slugDir, runName);
+      const staging = path.join(slugDir, `.editor-run-${event.event_id}.tmp`);
+      await fs.rm(staging, { recursive: true, force: true });
+      await fs.mkdir(staging, { mode: 0o700 });
+      try {
+        await fs.mkdir(path.join(staging, '05_final'), { recursive: true });
+        const artifactName = 'agent-revision.md';
+        await atomicWrite(path.join(staging, '05_final', artifactName), bytes);
+        const newTarget = { ...target, version: event.label, source: `05_final/${artifactName}`, finished: false, agentRevision: true, verified: false };
+        await atomicWrite(path.join(staging, 'editor-targets.json'), Buffer.from(JSON.stringify({ targets: [newTarget] }, null, 2) + '\n'));
+        await atomicWrite(path.join(staging, 'editor-source-sha256-before.txt'), Buffer.from(`${event.sha256}  ${artifactName}\n`));
+        const relPath = path.relative(root, runDir).split(path.sep).join('/');
+        const runKey = Buffer.from(relPath).toString('base64url');
+        const result = { created: true, runKey, relPath, path: `/r/${runKey}/`, notice: `エージェントの新しい版が届きました。${target.title} ${event.label} /r/${runKey}/` };
+        await atomicWrite(path.join(staging, '.bragi-agent-ingest.json'), Buffer.from(JSON.stringify({ eventId: event.event_id, requestHash, result }, null, 2) + '\n'));
+        await fs.rename(staging, runDir);
+        await atomicWrite(eventFile, Buffer.from(JSON.stringify({ requestHash, result, createdAt: now.toISOString() }, null, 2) + '\n'));
+        return result;
+      } catch (error) {
+        await fs.rm(staging, { recursive: true, force: true });
+        throw error;
+      }
+    } finally { await releaseSlugLock(); }
+  } finally { await releaseEventLock(); }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

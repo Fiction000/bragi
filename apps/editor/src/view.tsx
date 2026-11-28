@@ -72,6 +72,7 @@ export default function App() {
   const [replaceText, setReplaceText] = useState('');
   const [bulkOptions, setBulkOptions] = useState({ caseSensitive: false, wordBoundary: false, regex: false, excludeCode: true });
   const [selectedHits, setSelectedHits] = useState<boolean[]>([]);
+  const selectedHitsIdentity = useRef('');
   const [bulkResult, setBulkResult] = useState('');
   const [selected, setSelected] = useState('');
   const base = useRef('source');
@@ -117,7 +118,7 @@ export default function App() {
 
   const load = useCallback(async (id: string, preserve = false) => {
     const r = await fetch(`${apiBase}/api/drafts/${id}`); if (!r.ok) return;
-    const data = await r.json(); loading.current = true; bulkUndo.current = undefined; bulkUndoApplied.current = undefined; base.current = data.revision; runId.current = r.headers.get('x-editor-run-id') ?? runId.current;
+    const data = await r.json(); loading.current = true; bulkUndo.current = undefined; bulkUndoApplied.current = undefined; selectedHitsIdentity.current = ''; setSelectedHits([]); setBulkResult(''); setBulkOpen(false); setSwitcher(false); base.current = data.revision; runId.current = r.headers.get('x-editor-run-id') ?? runId.current;
     trailingNewlines.current = data.state.markdown.match(/\n*$/)?.[0] ?? '';
     setTarget({ ...data.target, finished: data.finished }); setSource(data.sourceMarkdown); setDraft(data.state); dispatch({ type: 'reset' });
     const parsed = editor?.markdown?.parse(data.sourceMarkdown);
@@ -133,9 +134,9 @@ export default function App() {
     queueMicrotask(() => { loading.current = false; });
   }, [editor, save]);
   useEffect(() => { fetch(`${apiBase}/api/targets`).then(r => r.json()).then((items: Target[]) => { setTargets(items); if (items[0]) void load(items[0].id); }); }, [load]);
-  useEffect(() => { if (!editor) return; const dom = editor.view.dom; const start = () => { composing.current = true; clearTimeout(timer.current); if (!readonlyRef.current) dispatch({ type: 'edit' }); }; const end = () => { composing.current = false; const markdown = readEditorMarkdown(); if (markdown !== state.current.markdown) { setDraft(s => ({ ...s, markdown })); dispatch({ type: 'edit' }); } planSave(); }; dom.addEventListener('compositionstart', start); dom.addEventListener('compositionend', end); return () => { dom.removeEventListener('compositionstart', start); dom.removeEventListener('compositionend', end); }; }, [editor, planSave]);
+  useEffect(() => { if (!editor) return; const dom = editor.view.dom; const start = () => { composing.current = true; clearTimeout(timer.current); if (!readonlyRef.current) dispatch({ type: 'edit' }); }; const end = () => { composing.current = false; const markdown = readEditorMarkdown(); if (bulkUndo.current !== undefined && markdown !== bulkUndoApplied.current) bulkUndo.current = undefined; if (markdown !== state.current.markdown && !readonlyRef.current) { setDraft(s => ({ ...s, markdown })); dispatch({ type: 'edit' }); } if (!readonlyRef.current) planSave(); }; dom.addEventListener('compositionstart', start); dom.addEventListener('compositionend', end); return () => { dom.removeEventListener('compositionstart', start); dom.removeEventListener('compositionend', end); }; }, [editor, planSave]);
   useEffect(() => { const fn = (e: BeforeUnloadEvent) => { if (['dirty', 'saving', 'failed', 'conflict', 'backupFailed'].includes(model.save)) { e.preventDefault(); e.returnValue = ''; } }; window.addEventListener('beforeunload', fn); return () => window.removeEventListener('beforeunload', fn); }, [model.save]);
-  useEffect(() => { const fn = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); setSwitcher(true); } if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); setBulkOpen(true); } if (e.key === 'Escape') { setSwitcher(false); setBulkOpen(false); } }; window.addEventListener('keydown', fn); return () => window.removeEventListener('keydown', fn); }, []);
+  useEffect(() => { const fn = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); setBulkOpen(false); setSwitcher(true); } if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); if (!readonlyRef.current) { setSwitcher(false); setBulkOpen(true); } } if (e.key === 'Escape' && !e.isComposing) { setSwitcher(false); setBulkOpen(false); } }; window.addEventListener('keydown', fn); return () => window.removeEventListener('keydown', fn); }, []);
 
   const updateNote = (id: string, body: string) => { const notes = state.current.notes.map(n => n.id === id ? { ...n, body } : n).filter(n => n.body.trim()); setDraft(s => ({ ...s, notes })); dispatch({ type: 'edit' }); planSave(); };
   const addNote = (index: number) => { const list = blocks(state.current.markdown); const note = { id: randomUUID(), anchor: { blockIndex: index, text: list[index] ?? '' }, body: '' }; setDraft(s => ({ ...s, notes: [...s.notes, note] })); dispatch({ type: 'edit' }); planSave(); setTimeout(() => document.querySelector<HTMLElement>(`[data-note="${note.id}"]`)?.focus(), 0); };
@@ -189,21 +190,32 @@ export default function App() {
   useEffect(() => { if (!editor) return; const f = () => setFocusTick(t => t + 1); editor.on('focus', f); editor.on('blur', f); editor.on('selectionUpdate', f); return () => { editor.off('focus', f); editor.off('blur', f); editor.off('selectionUpdate', f); }; }, [editor]);
   const caretBlock = editor && !editor.isDestroyed && editor.isFocused ? editor.state.selection.$from.index(0) : -1;
 
+  const search = findReplacements(draft.markdown, searchText, { ...bulkOptions, replacement: replaceText });
+  const hitIdentity = `${target?.id ?? ''}\\u0001${search.matches.map(match => `${match.start}:${match.end}:${match.text}`).join('\\u0000')}`;
+  useEffect(() => { if (selectedHitsIdentity.current === hitIdentity) return; selectedHitsIdentity.current = hitIdentity; setSelectedHits(search.matches.map(() => true)); }, [hitIdentity]);
+  const checkedHits = selectedHitsIdentity.current === hitIdentity && selectedHits.length === search.matches.length ? selectedHits : search.matches.map(() => true);
   if (targets.length === 0) return <main className="empty"><header>原稿</header><p>直す原稿はありません</p></main>;
   if (!target || !editor) return <main />;
-  const search = findReplacements(draft.markdown, searchText, { ...bulkOptions, replacement: replaceText });
-  const checkedHits = selectedHits.length === search.matches.length ? selectedHits : search.matches.map(() => true);
   const applyBulk = () => {
+    if (readonlyRef.current) return;
     const count = checkedHits.filter(Boolean).length;
     if (!count) return;
     const previous = state.current.markdown;
     const next = replaceSelected(previous, search.matches, checkedHits, replaceText);
-    if (next !== previous) { bulkUndo.current = previous; bulkUndoApplied.current = next; editor.commands.setContent(next, { contentType: 'markdown', emitUpdate: true }); }
+    if (next === previous) { setBulkResult(''); return; }
+    bulkUndo.current = previous;
+    editor.commands.setContent(next, { contentType: 'markdown', emitUpdate: false });
+    const serialized = readEditorMarkdown();
+    if (serialized === previous) { bulkUndo.current = undefined; setBulkResult(''); return; }
+    bulkUndoApplied.current = serialized;
+    markChanged(editor, source, serialized);
+    setDraft(s => ({ ...s, markdown: serialized }));
+    dispatch({ type: 'edit' }); planSave();
     setBulkResult(`${count}件を置換しました。`);
     setSelectedHits([]);
   };
   const undoBulk = () => {
-    if (bulkUndo.current === undefined) return;
+    if (readonlyRef.current || bulkUndo.current === undefined) return;
     const previous = bulkUndo.current;
     bulkUndo.current = undefined;
     bulkUndoApplied.current = undefined;
@@ -212,7 +224,7 @@ export default function App() {
   };
   const original = blocks(source), edited = blocks(draft.markdown), count = changed(original, edited);
   return <main className="app">
-    <header className="top"><button className="doc-title" onClick={() => setSwitcher(true)}>{target.title}　／　{target.medium}・{target.version}</button><button type="button" className="search-replace-open" onClick={() => setBulkOpen(true)}>検索・置換　⌘⇧H</button>{apiBase && <a className="to-list" href="/">一覧へ</a>}<span role="status" data-save-state={model.save} className={`save-state ${model.save}`}>{statuses[model.save]}</span></header>
+    <header className="top"><button className="doc-title" onClick={() => { setBulkOpen(false); setSwitcher(true); }}>{target.title}　／　{target.medium}・{target.version}</button><button type="button" className="search-replace-open" disabled={readonly} onClick={() => { if (!readonlyRef.current) { setSwitcher(false); setBulkOpen(true); } }}>検索・置換　⌘⇧H</button>{apiBase && <a className="to-list" href="/">一覧へ</a>}<span role="status" data-save-state={model.save} className={`save-state ${model.save}`}>{statuses[model.save]}</span></header>
     {readonly && <p className="unsupported">この原稿には、この画面で保てない書式があります。</p>}
     {model.save === 'failed' && <aside className="error"><strong>保存できませんでした</strong><p>変更はこのMacに保持されています。</p><button onClick={() => void save()}>再試行</button></aside>}
     {model.save === 'backupFailed' && <aside className="error"><strong>変更をこのMacに保持できませんでした</strong><p>このページを閉じないでください。</p></aside>}
@@ -226,6 +238,6 @@ export default function App() {
     </>}
     {selected && !readonly && <div className="selection-tools"><button onMouseDown={e => e.preventDefault()} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}>見出し</button><button onMouseDown={e => e.preventDefault()} onClick={() => editor.chain().focus().toggleBold().run()}>太字</button><button onMouseDown={e => e.preventDefault()} onClick={() => editor.chain().focus().toggleBlockquote().run()}>引用</button><button onMouseDown={e => e.preventDefault()} onClick={() => { const href = prompt('リンク'); if (href) editor.chain().focus().setLink({ href }).run(); }}>リンク</button><button onMouseDown={e => e.preventDefault()} onClick={() => addNote(Math.max(0, editor.state.selection.$from.index(0)))}>理由</button></div>}
     {switcher && <div className="switcher-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setSwitcher(false); }}><section className="switcher" role="dialog" aria-modal="true" aria-label="原稿を開く　⌘O"><h2>原稿を開く　⌘O</h2>{targets.map((item, i) => <button key={item.id} autoFocus={i === 0} onKeyDown={e => { const all = [...e.currentTarget.parentElement!.querySelectorAll('button')]; if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); all[(i + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length].focus(); } if (e.key === 'Enter') void switchTo(item.id); }} onClick={() => void switchTo(item.id)}><span>{item.title}</span><small>{item.medium}・{item.version}</small></button>)}</section></div>}
-    {bulkOpen && <div className="switcher-backdrop search-replace-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setBulkOpen(false); }}><section className="search-replace" role="dialog" aria-modal="true" aria-label="検索・置換"><header><h2>検索・置換</h2><button type="button" onClick={() => setBulkOpen(false)} aria-label="閉じる">閉じる</button></header><label>検索語<input autoFocus value={searchText} onChange={e => { setSearchText(e.target.value); setSelectedHits([]); setBulkResult(''); }} /></label><label>置換後<input value={replaceText} onChange={e => { setReplaceText(e.target.value); setSelectedHits([]); setBulkResult(''); }} /></label><fieldset><legend>検索オプション</legend><label><input type="checkbox" checked={bulkOptions.caseSensitive} onChange={e => { setBulkOptions(o => ({ ...o, caseSensitive: e.target.checked })); setSelectedHits([]); }} />大文字小文字を区別</label><label><input type="checkbox" checked={bulkOptions.wordBoundary} onChange={e => { setBulkOptions(o => ({ ...o, wordBoundary: e.target.checked })); setSelectedHits([]); }} />単語単位</label><label><input type="checkbox" checked={bulkOptions.regex} onChange={e => { setBulkOptions(o => ({ ...o, regex: e.target.checked })); setSelectedHits([]); }} />正規表現</label><label><input type="checkbox" checked={bulkOptions.excludeCode} onChange={e => { setBulkOptions(o => ({ ...o, excludeCode: e.target.checked })); setSelectedHits([]); }} />コード部分を除外</label></fieldset>{search.error && <p className="search-error" role="alert">正規表現エラー：{search.error}</p>}<p className="search-count">該当 {search.matches.length} 件</p><ol className="search-hits">{search.matches.map((match, i) => { const context = previewContext(draft.markdown, match); return <li key={`${match.start}-${match.end}`}><label><input type="checkbox" aria-label={`置換候補 ${i + 1}`} checked={checkedHits[i] ?? true} onChange={e => setSelectedHits(search.matches.map((_, index) => index === i ? e.target.checked : (checkedHits[index] ?? true)))} /><span className="search-context">{context.before}<mark>{context.hit}</mark>{context.after}</span><span className="search-arrow">→ {match.replacement}</span></label></li>; })}</ol><footer>{bulkResult && <p aria-live="polite">{bulkResult}</p>}{bulkUndo.current !== undefined && <button type="button" onClick={undoBulk}>元に戻す</button>}<button type="button" disabled={!checkedHits.some(Boolean) || Boolean(search.error)} onClick={applyBulk}>選択した {checkedHits.filter(Boolean).length} 件を置換</button></footer></section></div>}
+    {bulkOpen && !readonly && <div className="switcher-backdrop search-replace-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setBulkOpen(false); }}><section className="search-replace" role="dialog" aria-modal="true" aria-label="検索・置換"><header><h2>検索・置換</h2><button type="button" onClick={() => setBulkOpen(false)} aria-label="閉じる">閉じる</button></header><label>検索語<input autoFocus value={searchText} onChange={e => { setSearchText(e.target.value); setSelectedHits([]); setBulkResult(''); }} /></label><label>置換後<input value={replaceText} onChange={e => { setReplaceText(e.target.value); setSelectedHits([]); setBulkResult(''); }} /></label><fieldset><legend>検索オプション</legend><label><input type="checkbox" checked={bulkOptions.caseSensitive} onChange={e => { setBulkOptions(o => ({ ...o, caseSensitive: e.target.checked })); setSelectedHits([]); }} />大文字小文字を区別</label><label><input type="checkbox" checked={bulkOptions.wordBoundary} onChange={e => { setBulkOptions(o => ({ ...o, wordBoundary: e.target.checked })); setSelectedHits([]); }} />単語単位</label><label><input type="checkbox" checked={bulkOptions.regex} onChange={e => { setBulkOptions(o => ({ ...o, regex: e.target.checked })); setSelectedHits([]); }} />正規表現</label><label><input type="checkbox" checked={bulkOptions.excludeCode} onChange={e => { setBulkOptions(o => ({ ...o, excludeCode: e.target.checked })); setSelectedHits([]); }} />コード部分を除外</label></fieldset>{search.error && <p className="search-error" role="alert">正規表現エラー：{search.error}</p>}<p className="search-count">該当 {search.matches.length} 件</p><ol className="search-hits">{search.matches.map((match, i) => { const context = previewContext(draft.markdown, match); return <li key={`${match.start}-${match.end}`}><label><input type="checkbox" aria-label={`置換候補 ${i + 1}`} checked={checkedHits[i] ?? true} onChange={e => setSelectedHits(search.matches.map((_, index) => index === i ? e.target.checked : (checkedHits[index] ?? true)))} /><span className="search-context">{context.before}<mark>{context.hit}</mark>{context.after}</span><span className="search-arrow">→ {match.replacement}</span></label></li>; })}</ol><footer>{bulkResult && <p aria-live="polite">{bulkResult}</p>}{bulkUndo.current !== undefined && <button type="button" onClick={undoBulk}>元に戻す</button>}<button type="button" disabled={!checkedHits.some(Boolean) || Boolean(search.error)} onClick={applyBulk}>選択した {checkedHits.filter(Boolean).length} 件を置換</button></footer></section></div>}
   </main>;
 }

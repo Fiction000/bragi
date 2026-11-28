@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAccessVerifier } from './access.mjs';
 import { createFinishedEvent, listPendingOutboxes, sendOutboxEvent, validateWebhookUrl } from './webhook-outbox.mjs';
+import { handleReviewApi, reviewSections } from './review.mjs';
 import { createGhGraphql, decodeRunKey, defaultLedgerDir, loadLedger, retireDecision, adoptProposal, rejectProposal, loadProposals, proposalsDirFor, defaultDraftsRoot, defaultTaskNotesDir, loadSettings, today, listEditorRuns, scanDrafts } from '@wle/core';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -146,6 +147,14 @@ async function writeState(files, state, front = '') {
   await atomicWrite(files.notes, JSON.stringify(state.notes, null, 2) + '\n');
 }
 
+export async function saveDraftIfCurrent(runDir, target, state, baseRevision) {
+  const current = await currentDraft(runDir, target);
+  if (baseRevision !== current.revision) return { saved: false, revision: current.revision };
+  const files = await draftFiles(runDir, target.id, { create: true });
+  await writeState(files, state, (await readSource(target)).front);
+  return { saved: true, revision: revisionFor(state) };
+}
+
 function response(res, status, value, headers = {}) {
   const body = Buffer.from(JSON.stringify(value));
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': body.length, 'cache-control': 'no-store', ...headers });
@@ -176,7 +185,11 @@ function changedCount(source, markdown) {
 }
 
 // One run's API (everything under /api/targets and /api/drafts). `apiPath` is the path with any /r/<key> prefix removed.
-async function handleRun({ req, res, url, apiPath, runDir, targets, runId, webhookUrl, webhookSecret, webhookEnabled, webhookFetch }) {
+async function handleRun({ req, res, url, apiPath, runDir, targets, runId, webhookUrl, webhookSecret, webhookEnabled, webhookFetch, reviewOptions }) {
+  if (apiPath.startsWith('/api/reviews')) {
+    const reviewed = await handleReviewApi({ req, res, apiPath, runDir, targets, ...reviewOptions });
+    if (reviewed !== false) return reviewed;
+  }
   if (req.method === 'GET' && apiPath === '/api/targets') {
     const items = [];
     for (const target of targets.values()) items.push({ id: target.id, title: target.title, medium: target.medium, version: target.version, finished: (await currentDraft(runDir, target)).finished });
@@ -195,11 +208,9 @@ async function handleRun({ req, res, url, apiPath, runDir, targets, runId, webho
   if (req.method === 'PUT' && !match[2]) {
     const body = await readBody(req);
     if (!await validateState(body.state) || typeof body.baseRevision !== 'string') return response(res, 400, { error: 'Invalid state' });
-    const draft = await currentDraft(runDir, target);
-    if (body.baseRevision !== draft.revision) return response(res, 409, { revision: draft.revision });
-    const files = await draftFiles(runDir, id, { create: true });
-    await writeState(files, body.state, (await readSource(target)).front);
-    return response(res, 200, { revision: revisionFor(body.state) });
+    const saved = await saveDraftIfCurrent(runDir, target, body.state, body.baseRevision);
+    if (!saved.saved) return response(res, 409, { revision: saved.revision });
+    return response(res, 200, { revision: saved.revision });
   }
   if (req.method === 'POST' && match[2] === 'fork') {
     const body = await readBody(req);
@@ -259,6 +270,12 @@ export async function createEditorServer({ run: runPath, draftsRoot, port = PORT
   const gh = github === undefined ? createGhGraphql() : github;
   // taskNotesDir: undefined -> the configured TaskNotes folder (BRAGI_TASKNOTES), if any; null -> none. draftsIndex: undefined -> <root>/drafts.index.yaml if present.
   const notesDir = taskNotesDir === undefined ? defaultTaskNotesDir() : taskNotesDir;
+  const reviewOptions = (runDir) => ({
+    currentDraft, readBody, send: response,
+    saveDraft: (target, state, baseRevision) => saveDraftIfCurrent(runDir, target, state, baseRevision),
+    slug: path.basename(path.dirname(runDir)).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'article',
+    proposalOptions: draftsRoot && ledgerDir ? { draftsRoot, ledgerDir, proposalsDir: proposalsDir ?? undefined, taskNotesDir: notesDir, draftsIndex, prRepos, github: gh } : null,
+  });
   const keyed = new Map();
   let runsCache = { at: 0, runs: [] };
   const scannedRuns = async () => {
@@ -333,11 +350,11 @@ export async function createEditorServer({ run: runPath, draftsRoot, port = PORT
         if (!found) return response(res, 404, { error: 'Unknown run' });
         const rest = keyedMatch[2] ?? '/';
         if (req.method === 'GET' && !rest.startsWith('/api/')) return rest === '/' ? await serveStatic(res, '/') : response(res, 404, { error: 'Not found' });
-        const handled = await handleRun({ req, res, url, apiPath: rest, runDir: found.dir, targets: found.targets, runId: found.runId, webhookUrl, webhookSecret, webhookEnabled, webhookFetch });
+        const handled = await handleRun({ req, res, url, apiPath: rest, runDir: found.dir, targets: found.targets, runId: found.runId, webhookUrl, webhookSecret, webhookEnabled, webhookFetch, reviewOptions: reviewOptions(found.dir) });
         return handled === false ? response(res, 404, { error: 'Not found' }) : handled;
       }
       if (runDir) {
-        const handled = await handleRun({ req, res, url, apiPath: rawPath, runDir, targets, runId: path.basename(runDir), webhookUrl, webhookSecret, webhookEnabled, webhookFetch });
+        const handled = await handleRun({ req, res, url, apiPath: rawPath, runDir, targets, runId: path.basename(runDir), webhookUrl, webhookSecret, webhookEnabled, webhookFetch, reviewOptions: reviewOptions(runDir) });
         if (handled !== false) return handled;
       } else if (rawPath.startsWith('/api/')) return response(res, 404, { error: 'Not found' });
       if (req.method === 'GET') return await serveStatic(res, url.pathname);

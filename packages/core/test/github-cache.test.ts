@@ -38,17 +38,29 @@ test('returns stale GitHub data immediately and coalesces refreshes', async () =
   assert.equal(await client(request), second);
 });
 
-test('keeps the previous result when a background refresh fails', async () => {
+test('backs off stale GitHub refresh after a background failure', async () => {
   let calls = 0;
-  const fake: GithubClient = async () => {
-    calls++;
-    if (calls === 1) return first;
-    throw new Error('offline');
-  };
-  const client = staleClient()(fake, 10);
-  assert.equal(await client(request), first);
-  await delay(15);
-  assert.equal(await client(request), first);
-  await delay(0);
-  assert.equal(calls, 2);
+  let now = 1_000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const fake: GithubClient = async () => {
+      calls++;
+      if (calls === 1) return first;
+      throw new Error('offline');
+    };
+    const client = staleClient()(fake, 10);
+    assert.equal(await client(request), first);
+    now += 11;
+    assert.equal(await client(request), first);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 2);
+    assert.equal(await client(request), first);
+    now += 29_999;
+    assert.equal(await client(request), first);
+    assert.equal(calls, 2);
+    now += 1;
+    assert.equal(await client(request), first);
+    assert.equal(calls, 3);
+  } finally { Date.now = originalNow; }
 });

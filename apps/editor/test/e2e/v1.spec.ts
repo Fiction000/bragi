@@ -94,6 +94,30 @@ test('8 edit, autosave, reload, note persistence and changed-block marker', asyn
   expect(await readFile(path.join(run, source))).toEqual(original);
 });
 
+test('⌘Z and ⌘⇧Z undo and redo saved article text', async () => {
+  const article = editor().locator('p').first();
+  await article.click();
+  await page.keyboard.press('End');
+  await page.keyboard.insertText('履歴回帰確認');
+  await waitSaved();
+  await page.keyboard.press('Meta+z');
+  await waitSaved();
+  await expect(editor()).not.toContainText('履歴回帰確認');
+  await expect((await readFile(path.join(run, '05_final/editor/kawazoi/nat-final.md'), 'utf8'))).not.toContain('履歴回帰確認');
+  await page.keyboard.press('Meta+Shift+z');
+  await waitSaved();
+  await expect(editor()).toContainText('履歴回帰確認');
+  expect(await readFile(path.join(run, '05_final/editor/kawazoi/nat-final.md'), 'utf8')).toContain('履歴回帰確認');
+  await page.keyboard.press('Control+z');
+  await waitSaved();
+  await expect(editor()).not.toContainText('履歴回帰確認');
+  await page.keyboard.press('Control+Shift+z');
+  await waitSaved();
+  await expect(editor()).toContainText('履歴回帰確認');
+  expect(await readFile(path.join(run, '05_final/editor/kawazoi/nat-final.md'), 'utf8')).toContain('履歴回帰確認');
+});
+
+
 test('16 idle draft reads 保存済み without saving or creating editor folders', async () => {
   let writes = 0;
   page.on('request', request => { if (request.method() !== 'GET' && request.url().includes('/api/drafts/')) writes++; });

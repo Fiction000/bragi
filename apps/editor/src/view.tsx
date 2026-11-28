@@ -141,12 +141,16 @@ export default function App() {
   useEffect(() => {
     if (!editor) return;
     const fn = (e: KeyboardEvent) => {
-      if (!e.ctrlKey || e.metaKey || e.key.toLowerCase() !== 'z' || e.defaultPrevented) return;
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z' || e.defaultPrevented || e.altKey) return;
+      if (e.isComposing || e.keyCode === 229 || readonlyRef.current || !editor.isEditable) {
+        e.stopImmediatePropagation();
+        return;
+      }
       e.preventDefault();
       if (e.shiftKey) editor.commands.redo(); else editor.commands.undo();
     };
-    editor.view.dom.addEventListener('keydown', fn);
-    return () => editor.view.dom.removeEventListener('keydown', fn);
+    editor.view.dom.addEventListener('keydown', fn, true);
+    return () => editor.view.dom.removeEventListener('keydown', fn, true);
   }, [editor]);
 
   const updateNote = (id: string, body: string) => { const notes = state.current.notes.map(n => n.id === id ? { ...n, body } : n).filter(n => n.body.trim()); setDraft(s => ({ ...s, notes })); dispatch({ type: 'edit' }); planSave(); };

@@ -94,6 +94,39 @@ test('8 edit, autosave, reload, note persistence and changed-block marker', asyn
   expect(await readFile(path.join(run, source))).toEqual(original);
 });
 
+test('undo keys defer during IME composition and are ignored in readonly mode', async ({ browser: browserFixture }) => {
+  const paragraph = editor().locator('p').first();
+  await paragraph.click(); await page.keyboard.press('End'); await page.keyboard.insertText('composition-guard');
+  const before = await editor().innerText();
+  await editor().evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, isComposing: true, bubbles: true, cancelable: true })));
+  expect(await editor().innerText()).toBe(before);
+  await editor().evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, isComposing: true, bubbles: true, cancelable: true })));
+  expect(await editor().innerText()).toBe(before);
+  await editor().evaluate(node => {
+    const event = new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'keyCode', { value: 229 });
+    node.dispatchEvent(event);
+  });
+  expect(await editor().innerText()).toBe(before);
+  await editor().evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, altKey: true, bubbles: true, cancelable: true })));
+  expect(await editor().innerText()).toBe(before);
+
+  await stop();
+  await start('---\ntitle: Readonly\n---\n\n| unsupported | syntax |\n| --- | --- |');
+  await browser(browserFixture);
+  await expect(page.locator('.unsupported')).toBeVisible();
+  const readonlyText = await editor().innerText();
+  const prevented = await editor().evaluate(node => {
+    const event = new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true });
+    node.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(prevented).toBe(false);
+  expect(await editor().innerText()).toBe(readonlyText);
+  await editor().evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true })));
+  expect(await editor().innerText()).toBe(readonlyText);
+});
+
 test('⌘Z and ⌘⇧Z undo and redo saved article text', async () => {
   const article = editor().locator('p').first();
   await article.click();
@@ -103,7 +136,7 @@ test('⌘Z and ⌘⇧Z undo and redo saved article text', async () => {
   await page.keyboard.press('Meta+z');
   await waitSaved();
   await expect(editor()).not.toContainText('履歴回帰確認');
-  await expect((await readFile(path.join(run, '05_final/editor/kawazoi/nat-final.md'), 'utf8'))).not.toContain('履歴回帰確認');
+  expect(await readFile(path.join(run, '05_final/editor/kawazoi/nat-final.md'), 'utf8')).not.toContain('履歴回帰確認');
   await page.keyboard.press('Meta+Shift+z');
   await waitSaved();
   await expect(editor()).toContainText('履歴回帰確認');

@@ -15,7 +15,7 @@ async function start(custom = false) {
   run = path.join(tmp, 'run');
   await cp(fixture, run, { recursive: true });
   if (custom) {
-    const original = `---
+    const original = typeof custom === 'string' ? custom : `---
 title: Bulk Replace Fixture
 ---
 Claude Code skill.
@@ -28,8 +28,13 @@ Use \`skills/list\`.
 {"skills":"skill"}
 \`\`\`
 `;
-    await writeFile(path.join(run, '05_final', 'bulk-original.md'), original);
-    await writeFile(path.join(run, 'editor-targets.json'), JSON.stringify({ targets: [{ id: 'bulkreplace', title: 'Bulk Replace Fixture', medium: 'Zenn', version: 'review', source: '05_final/bulk-original.md' }] }));
+    if (Array.isArray(custom)) {
+      for (const article of custom) await writeFile(path.join(run, '05_final', article.source), article.markdown);
+      await writeFile(path.join(run, 'editor-targets.json'), JSON.stringify({ targets: custom.map(({ id, title, medium, version, source }) => ({ id, title, medium, version, source: `05_final/${source}` })) }));
+    } else {
+      await writeFile(path.join(run, '05_final', 'bulk-original.md'), original);
+      await writeFile(path.join(run, 'editor-targets.json'), JSON.stringify({ targets: [{ id: 'bulkreplace', title: 'Bulk Replace Fixture', medium: 'Zenn', version: 'review', source: '05_final/bulk-original.md' }] }));
+    }
   }
   server = await createEditorServer({ run, port: 0 });
   port = server.address().port;
@@ -278,4 +283,109 @@ Use \`skills/list\`.
   await dialog.getByRole('button', { name: '元に戻す' }).click();
   await waitSaved();
   expect(await readFile(path.join(run, '05_final/editor/bulkreplace/nat-final.md'))).toEqual(original);
+});
+
+test('21 readonly fixture disables bulk search and never writes article bytes', async ({ browser: browserFixture }) => {
+  await stop();
+  await start('---\ntitle: Readonly Fixture\n---\n| term | value |\n| --- | --- |\n| skill | kept |\n');
+  await browser(browserFixture);
+  const original = await readFile(path.join(run, '05_final/bulk-original.md'));
+  let writes = 0;
+  page.on('request', request => { if (request.method() !== 'GET' && request.url().includes('/api/drafts/')) writes++; });
+  await expect(page.locator('.unsupported')).toBeVisible();
+  await expect(page.getByRole('button', { name: /検索・置換/ })).toBeDisabled();
+  await page.keyboard.press('Meta+Shift+h');
+  await expect(page.getByRole('dialog', { name: '検索・置換' })).toHaveCount(0);
+  await page.waitForTimeout(900);
+  expect(writes).toBe(0);
+  expect(await readFile(path.join(run, '05_final/bulk-original.md'))).toEqual(original);
+});
+
+test('22 IME composition edits invalidate one-step bulk undo', async ({ browser: browserFixture }) => {
+  await stop(); await start(true); await browser(browserFixture);
+  const dialog = page.getByRole('dialog', { name: '検索・置換' });
+  await page.keyboard.press('Meta+Shift+h');
+  await dialog.getByLabel('検索語').fill('skill');
+  await dialog.getByLabel('置換後').fill('スキル');
+  await dialog.getByRole('button', { name: '選択した 2 件を置換' }).click();
+  await waitSaved();
+  await dialog.getByRole('button', { name: '閉じる' }).click();
+  await editor().locator('p').first().click(); await page.keyboard.press('End');
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Input.imeSetComposition', { text: 'IME確定', selectionStart: 4, selectionEnd: 4 });
+  await cdp.send('Input.insertText', { text: 'IME確定' });
+  await waitSaved();
+  await page.keyboard.press('Meta+Shift+h');
+  const reopened = page.getByRole('dialog', { name: '検索・置換' });
+  await expect(reopened.getByRole('button', { name: '元に戻す' })).toHaveCount(0);
+  expect(await readFile(path.join(run, '05_final/editor/bulkreplace/nat-final.md'), 'utf8')).toContain('IME確定');
+});
+
+test('23 undo stays available when TipTap normalizes the replaced Markdown', async ({ browser: browserFixture }) => {
+  await stop();
+  const original = 'skill\n\nskill\n';
+  await start(original); await browser(browserFixture);
+  const dialog = page.getByRole('dialog', { name: '検索・置換' });
+  await page.keyboard.press('Meta+Shift+h');
+  await dialog.getByLabel('検索語').fill('skill');
+  await dialog.getByLabel('置換後').fill('+ skill');
+  await dialog.getByRole('button', { name: '選択した 2 件を置換' }).click();
+  await expect(dialog.getByRole('button', { name: '元に戻す' })).toBeVisible();
+  await dialog.getByRole('button', { name: '元に戻す' }).click();
+  await waitSaved();
+  expect(await readFile(path.join(run, '05_final/editor/bulkreplace/nat-final.md'))).toEqual(Buffer.from(original));
+});
+
+test('24 switching documents resets hit selection and result status', async ({ browser: browserFixture }) => {
+  await stop();
+  await start([
+    { id: 'bulk-one', title: 'First fixture', medium: 'Zenn', version: 'review', source: 'bulk-one.md', markdown: 'skill first. skill second.' },
+    { id: 'bulk-two', title: 'Second fixture', medium: 'Zenn', version: 'review', source: 'bulk-two.md', markdown: 'Only skill here.' },
+  ]);
+  await browser(browserFixture);
+  const dialog = page.getByRole('dialog', { name: '検索・置換' });
+  await page.keyboard.press('Meta+Shift+h');
+  await dialog.getByLabel('検索語').fill('skill');
+  await dialog.getByLabel('置換後').fill('スキル');
+  await dialog.getByRole('checkbox', { name: '置換候補 1' }).uncheck();
+  await dialog.getByRole('button', { name: '選択した 1 件を置換' }).click();
+  await expect(dialog.getByText('1件を置換しました。')).toBeVisible();
+  const remaining = dialog.getByRole('checkbox', { name: '置換候補 1' });
+  await remaining.uncheck();
+  await dialog.getByRole('button', { name: '閉じる' }).click();
+  await page.getByRole('button', { name: /First fixture/ }).click();
+  await page.getByRole('dialog', { name: /原稿を開く/ }).getByRole('button', { name: /Second fixture/ }).click();
+  await expect(editor()).toContainText('Only skill here.');
+  await page.keyboard.press('Meta+Shift+h');
+  await expect(dialog.getByText('該当 1 件')).toBeVisible();
+  await expect(dialog.getByRole('checkbox', { name: '置換候補 1' })).toBeChecked();
+  await expect(dialog.getByText('1件を置換しました。')).toHaveCount(0);
+});
+
+test('25 Cmd+O and Cmd+Shift+H never leave both dialogs open', async () => {
+  const search = page.getByRole('dialog', { name: '検索・置換' });
+  const switcher = page.getByRole('dialog', { name: /原稿を開く/ });
+  await page.getByRole('button', { name: /検索・置換/ }).click();
+  await page.keyboard.press('Meta+o');
+  await expect(switcher).toBeVisible();
+  await expect(search).toHaveCount(0);
+  await page.keyboard.press('Meta+Shift+h');
+  await expect(search).toBeVisible();
+  await expect(switcher).toHaveCount(0);
+});
+
+test('26 Escape during IME composition leaves the search dialog open', async () => {
+  await page.getByRole('button', { name: /検索・置換/ }).click();
+  await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true })));
+  await expect(page.getByRole('dialog', { name: '検索・置換' })).toBeVisible();
+});
+
+test('27 identical replacement text does not report successful changes', async ({ browser: browserFixture }) => {
+  await stop(); await start(['skill', '', 'skill', ''].join(String.fromCharCode(10))); await browser(browserFixture);
+  const dialog = page.getByRole('dialog', { name: '検索・置換' });
+  await page.keyboard.press('Meta+Shift+h');
+  await dialog.getByLabel('検索語').fill('skill');
+  await dialog.getByLabel('置換後').fill('skill');
+  await dialog.getByRole('button', { name: '選択した 2 件を置換' }).click();
+  await expect(dialog.getByText(/件を置換しました/)).toHaveCount(0);
 });

@@ -270,6 +270,41 @@ test('a finish still in flight after switching runs is sent to the run it starte
   expect(finishes[0]).toBe(`${aHref!.replace(/\/$/, '')}/api/drafts/shared-v1/finish`);
 });
 
+test('cancelling a browser forward keeps the history as it was', async ({ page }) => {
+  await makeSharedRun('run-a', 'Run A', 'RUN A ARTICLE ONLY\n');
+  await page.route('**/api/drafts/shared-v1', route => route.request().method() === 'PUT' ? new Promise<void>(() => {}) : route.continue());
+  await page.goto(origin);
+  await stageRow(page, 'run-a').getByRole('link', { name: '開く' }).click();
+  await expect(page.locator('.ProseMirror')).toContainText('RUN A ARTICLE ONLY');
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
+  await page.goBack();
+  await expect(page.locator('.ProseMirror')).toContainText('RUN A ARTICLE ONLY');
+  await page.locator('.ProseMirror p').first().click();
+  await page.keyboard.press('End');
+  await page.keyboard.insertText(' 進む前の未保存');
+  const lengthBefore = await page.evaluate(() => history.length);
+  page.once('dialog', d => void d.dismiss());
+  await page.evaluate(() => history.forward());
+  await expect(page).toHaveURL(/\/r\/[A-Za-z0-9_-]+\/$/);
+  await expect(page.locator('.ProseMirror')).toContainText('進む前の未保存');
+  expect(await page.evaluate(() => history.length)).toBe(lengthBefore);
+});
+
+test('a failed mode check after leaving a directly opened editor still lets back return to it', async ({ page }) => {
+  await page.goto(origin);
+  const href = await stageRow(page, 'editing-sample').getByRole('link', { name: '開く' }).getAttribute('href');
+  await page.goto(`${origin}${href}`);
+  await expect(page.locator('.ProseMirror')).toContainText('合成データ');
+  let failed = false;
+  await page.route('**/api/mode', route => { if (failed) return route.continue(); failed = true; return route.abort(); });
+  await page.getByRole('link', { name: '一覧へ' }).click();
+  await expect(page.getByRole('heading', { name: '下書きの一覧' })).toBeVisible();
+  await page.goBack();
+  await expect(page.locator('.ProseMirror')).toContainText('合成データ');
+  await expect(page.getByRole('link', { name: '一覧へ' })).toBeVisible();
+});
+
 test('direct editor URL returns to the list when clicking 一覧へ', async ({ page }) => {
   await page.goto(origin);
   const href = await stageRow(page, 'editing-sample').getByRole('link', { name: '開く' }).getAttribute('href');

@@ -18,12 +18,17 @@ function Root() {
   const [page, setPage] = useState(location.hash);
   const [pathname, setPathname] = useState(location.pathname);
   const [dashboardOpened, setDashboardOpened] = useState(!location.pathname.startsWith('/r/'));
-  const shown = useRef(location.pathname + location.search);
+  // Each history entry this page adds carries its position, so a cancelled back/forward can return exactly where it was.
+  const position = () => (typeof history.state?.bragi === 'number' ? history.state.bragi : 0);
+  const shown = useRef(position());
+  const restoring = useRef(false);
   useEffect(() => {
     const onHash = () => setPage(location.hash);
     const onPop = () => {
-      if (location.pathname !== shown.current.split('?')[0] && confirmLeave && !confirmLeave()) { history.pushState({}, '', shown.current); return; }
-      shown.current = location.pathname + location.search;
+      if (restoring.current) { restoring.current = false; return; }
+      const to = position();
+      if (to !== shown.current && confirmLeave && !confirmLeave()) { restoring.current = true; history.go(shown.current - to); return; }
+      shown.current = to;
       updateApiBase(location.pathname);
       setPathname(location.pathname);
       setPage(location.hash);
@@ -35,20 +40,20 @@ function Root() {
   const editorRoute = pathname.startsWith('/r/');
   useEffect(() => {
     if (editorRoute || dashboard !== undefined) return;
-    fetch('/api/mode').then(r => (r.ok ? r.json() : { dashboard: false })).catch(() => ({ dashboard: false })).then(m => setDashboard(Boolean(m.dashboard)));
+    fetch('/api/mode').then(r => (r.ok ? r.json() : { dashboard: false })).catch(() => { location.reload(); return new Promise<never>(() => {}); }).then(m => setDashboard(Boolean(m.dashboard)));
   }, [editorRoute, dashboard]);
   useEffect(() => {
     if (dashboard && !editorRoute) setDashboardOpened(true);
   }, [dashboard, editorRoute]);
   const navigate = (path: string) => {
-    history.pushState({}, '', path);
-    shown.current = location.pathname + location.search;
+    shown.current = position() + 1;
+    history.pushState({ bragi: shown.current }, '', path);
     updateApiBase(path);
     setPathname(location.pathname);
   };
   updateApiBase(pathname);
   if (dashboard === undefined && !editorRoute) return <main />;
-  if (dashboard === false) return <App />;
+  if (dashboard === false && !editorRoute) return <App />;
   if (dashboard && !editorRoute && page === '#/ledger') return <Ledger />;
   if (dashboard && !editorRoute && page === '#/proposals') return <Proposals />;
   return <>

@@ -51,6 +51,7 @@ const markChanged = (editor: Editor, source: string, current: string) => {
     const shouldMark = changed.has(index++);
     if (node.attrs.changed !== shouldMark) transaction.setNodeMarkup(position, undefined, { ...node.attrs, changed: shouldMark });
   });
+  transaction.setMeta('addToHistory', false);
   if (transaction.docChanged) editor.view.dispatch(transaction);
 };
 
@@ -137,6 +138,16 @@ export default function App() {
   useEffect(() => { if (!editor) return; const dom = editor.view.dom; const start = () => { composing.current = true; clearTimeout(timer.current); if (!readonlyRef.current) dispatch({ type: 'edit' }); }; const end = () => { composing.current = false; const markdown = readEditorMarkdown(); if (bulkUndo.current !== undefined && markdown !== bulkUndoApplied.current) bulkUndo.current = undefined; if (markdown !== state.current.markdown && !readonlyRef.current) { setDraft(s => ({ ...s, markdown })); dispatch({ type: 'edit' }); } if (!readonlyRef.current) planSave(); }; dom.addEventListener('compositionstart', start); dom.addEventListener('compositionend', end); return () => { dom.removeEventListener('compositionstart', start); dom.removeEventListener('compositionend', end); }; }, [editor, planSave]);
   useEffect(() => { const fn = (e: BeforeUnloadEvent) => { if (['dirty', 'saving', 'failed', 'conflict', 'backupFailed'].includes(model.save)) { e.preventDefault(); e.returnValue = ''; } }; window.addEventListener('beforeunload', fn); return () => window.removeEventListener('beforeunload', fn); }, [model.save]);
   useEffect(() => { const fn = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); setBulkOpen(false); setSwitcher(true); } if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'h') { e.preventDefault(); if (!readonlyRef.current && currentTarget.current) { setSwitcher(false); setBulkOpen(true); } } if (e.key === 'Escape' && !e.isComposing) { setSwitcher(false); setBulkOpen(false); } }; window.addEventListener('keydown', fn); return () => window.removeEventListener('keydown', fn); }, []);
+  useEffect(() => {
+    if (!editor) return;
+    const fn = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.metaKey || e.key.toLowerCase() !== 'z' || e.defaultPrevented) return;
+      e.preventDefault();
+      if (e.shiftKey) editor.commands.redo(); else editor.commands.undo();
+    };
+    editor.view.dom.addEventListener('keydown', fn);
+    return () => editor.view.dom.removeEventListener('keydown', fn);
+  }, [editor]);
 
   const updateNote = (id: string, body: string) => { const notes = state.current.notes.map(n => n.id === id ? { ...n, body } : n).filter(n => n.body.trim()); setDraft(s => ({ ...s, notes })); dispatch({ type: 'edit' }); planSave(); };
   const addNote = (index: number) => { const list = blocks(state.current.markdown); const note = { id: randomUUID(), anchor: { blockIndex: index, text: list[index] ?? '' }, body: '' }; setDraft(s => ({ ...s, notes: [...s.notes, note] })); dispatch({ type: 'edit' }); planSave(); setTimeout(() => document.querySelector<HTMLElement>(`[data-note="${note.id}"]`)?.focus(), 0); };

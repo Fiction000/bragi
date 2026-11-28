@@ -105,14 +105,20 @@ test('fork does not overwrite an existing conflict file', async () => {
   } finally { await t.close(); }
 });
 
-test('reading targets and drafts never creates editor folders; unchanged finish still records', async () => {
+test('reading targets and drafts never creates editor folders; unchanged finish records once', async () => {
   const t = await setup();
   try {
     await t.api('/api/targets'); const d = await (await t.api('/api/drafts/market-note')).json();
     await assert.rejects(access(path.join(t.run, '05_final', 'editor')));
-    const fin = await t.api('/api/drafts/market-note/finish', { method: 'POST', body: json({ baseRevision: d.revision }) });
+    const url = '/api/drafts/market-note/finish';
+    const fin = await t.api(url, { method: 'POST', body: json({ baseRevision: d.revision }) });
     assert.equal(fin.status, 200);
-    const rec = JSON.parse(await readFile(path.join(t.run, '05_final', 'editor', 'market-note', 'finished.json'), 'utf8'));
+    const finished = path.join(t.run, '05_final', 'editor', 'market-note', 'finished.json');
+    const before = await readFile(finished);
+    const again = await t.api(url, { method: 'POST', body: json({ baseRevision: d.revision }) });
+    assert.equal(again.status, 409);
+    assert.deepEqual(await readFile(finished), before);
+    const rec = JSON.parse(before);
     assert.equal(rec.unchanged, true); assert.equal(rec.changedBlocks, 0);
   } finally { await t.close(); }
 });

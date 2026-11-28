@@ -36,6 +36,28 @@ async function atomicWrite(file, contents) {
   try { await dir.sync(); } finally { await dir.close(); }
 }
 
+async function atomicWriteOnce(file, contents) {
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  const handle = await fs.open(temp, 'wx', 0o600);
+  try {
+    await handle.writeFile(contents);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await fs.link(temp, file);
+  } catch (error) {
+    await fs.unlink(temp);
+    if (error.code === 'EEXIST') return false;
+    throw error;
+  }
+  await fs.unlink(temp);
+  const dir = await fs.open(path.dirname(file), 'r');
+  try { await dir.sync(); } finally { await dir.close(); }
+  return true;
+}
+
 async function loadTargets(runDir) {
   const listing = JSON.parse(await fs.readFile(path.join(runDir, 'editor-targets.json'), 'utf8'));
   if (!Array.isArray(listing.targets)) throw new Error('editor-targets.json must contain targets');
@@ -192,12 +214,14 @@ async function handleRun({ req, res, url, apiPath, runDir, targets, runId }) {
     return response(res, 200, { paths: [path.relative(runDir, path.join(files.dir, markdownFile)), path.relative(runDir, path.join(files.dir, notesFile))] });
   }
   if (req.method === 'POST' && match[2] === 'finish') {
-    const body = await readBody(req), draft = await currentDraft(runDir, target);
+    const body = await readBody(req), existingFiles = await draftFiles(runDir, id);
+    if (await exists(existingFiles.finished)) return response(res, 409, { error: 'Already finished' });
+    const draft = await currentDraft(runDir, target);
     if (body.baseRevision !== draft.revision) return response(res, 409, { revision: draft.revision });
+    const finishFiles = await draftFiles(runDir, id, { create: true });
     const src = await readSource(target), sourceMarkdown = src.body;
     const record = { id, finishedAt: new Date().toISOString(), sourceSha256: createHash('sha256').update(src.raw).digest('hex'), finalSha256: createHash('sha256').update(src.front + draft.state.markdown).digest('hex'), changedBlocks: changedCount(sourceMarkdown, draft.state.markdown), notes: draft.state.notes.length, unchanged: sourceMarkdown === draft.state.markdown };
-    const finishFiles = await draftFiles(runDir, id, { create: true });
-    await atomicWrite(finishFiles.finished, JSON.stringify(record, null, 2) + '\n');
+    if (!await atomicWriteOnce(finishFiles.finished, JSON.stringify(record, null, 2) + '\n')) return response(res, 409, { error: 'Already finished' });
     return response(res, 200, record);
   }
   return false;

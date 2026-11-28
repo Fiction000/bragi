@@ -138,6 +138,7 @@ export function parseResponse(request: PrRequest, data: unknown): GithubResult {
 export function createStaleWhileRevalidate(fetchGithub: GithubClient, ttlMs: number): GithubClient {
   const cache = new Map<string, { at: number; result: GithubResult }>();
   const inFlight = new Map<string, Promise<GithubResult>>();
+  const retryAfter = new Map<string, number>();
   return (request) => {
     const key = buildQuery(request);
     const hit = cache.get(key);
@@ -148,6 +149,7 @@ export function createStaleWhileRevalidate(fetchGithub: GithubClient, ttlMs: num
       if (current) return current;
       const pending = fetchGithub(request).then((result) => {
         cache.set(key, { at: Date.now(), result });
+        retryAfter.delete(key);
         return result;
       }).finally(() => inFlight.delete(key));
       inFlight.set(key, pending);
@@ -155,7 +157,8 @@ export function createStaleWhileRevalidate(fetchGithub: GithubClient, ttlMs: num
     };
 
     if (hit) {
-      void refresh().catch(() => {});
+      if ((retryAfter.get(key) ?? 0) > Date.now()) return Promise.resolve(hit.result);
+      void refresh().catch(() => { retryAfter.set(key, Date.now() + 30_000); });
       return Promise.resolve(hit.result);
     }
     return refresh();

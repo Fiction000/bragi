@@ -157,6 +157,24 @@ test('⌘Z and ⌘⇧Z undo and redo saved article text', async () => {
   expect(await readFile(path.join(run, '05_final/editor/kawazoi/nat-final.md'), 'utf8')).toContain('履歴回帰確認');
 });
 
+test('one undo or redo shortcut advances exactly one history group', async () => {
+  const paragraph = editor().locator('p').first();
+  const append = async (text: string) => {
+    await paragraph.click(); await page.keyboard.press('End'); await page.keyboard.insertText(text); await waitSaved();
+  };
+  const undoAndRedo = async (undo: string, redo: string) => {
+    await page.keyboard.press(undo); await expect(editor()).toContainText('undo-step-one'); await expect(editor()).not.toContainText('undo-step-two');
+    await page.keyboard.press(undo); await expect(editor()).not.toContainText('undo-step-one'); await expect(editor()).not.toContainText('undo-step-two');
+    await page.keyboard.press(redo); await expect(editor()).toContainText('undo-step-one'); await expect(editor()).not.toContainText('undo-step-two');
+    await page.keyboard.press(redo); await expect(editor()).toContainText('undo-step-two');
+  };
+  await append(' undo-step-one');
+  await page.waitForTimeout(700);
+  await append(' undo-step-two');
+  await undoAndRedo('Meta+z', 'Meta+Shift+z');
+  await undoAndRedo('Control+z', 'Control+Shift+z');
+});
+
 
 test('16 idle draft reads 保存済み without saving or creating editor folders', async () => {
   let writes = 0;

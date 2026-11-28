@@ -121,3 +121,17 @@ test('preview context never slices a surrogate pair', () => {
   assert.ok(context.before.endsWith('😀BC'));
   assert.ok(context.after.startsWith('DE😀'));
 });
+
+test('prose backtick runs with backticks in their info text are inline spans, not unclosed fences', () => {
+  assert.deepEqual(findReplacements('```foo``` and inline skill', 'skill').matches.map(m => m.text), ['skill']);
+});
+
+test('fence-looking lines inside front matter do not hide the article body', () => {
+  const text = ['---', 'metadata: yes', '```yaml', '---', 'body skill'].join(String.fromCharCode(10));
+  assert.deepEqual(findReplacements(text, 'skill').matches.map(m => m.text), ['skill']);
+});
+
+test('unmatched inline backticks do not pair across fenced code and hide prose', () => {
+  const text = ['prefix `unmatched', 'prose skill before fence', '```js', 'const value = `template`;', '```', 'after skill'].join(String.fromCharCode(10));
+  assert.deepEqual(findReplacements(text, 'skill').matches.map(m => m.start), [24, 85]);
+});

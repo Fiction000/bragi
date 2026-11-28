@@ -135,22 +135,43 @@ export function parseResponse(request: PrRequest, data: unknown): GithubResult {
   return out;
 }
 
+export function createStaleWhileRevalidate(fetchGithub: GithubClient, ttlMs: number): GithubClient {
+  const cache = new Map<string, { at: number; result: GithubResult }>();
+  const inFlight = new Map<string, Promise<GithubResult>>();
+  return (request) => {
+    const key = buildQuery(request);
+    const hit = cache.get(key);
+    if (hit && Date.now() - hit.at < ttlMs) return Promise.resolve(hit.result);
+
+    const refresh = () => {
+      const current = inFlight.get(key);
+      if (current) return current;
+      const pending = fetchGithub(request).then((result) => {
+        cache.set(key, { at: Date.now(), result });
+        return result;
+      }).finally(() => inFlight.delete(key));
+      inFlight.set(key, pending);
+      return pending;
+    };
+
+    if (hit) {
+      void refresh().catch(() => {});
+      return Promise.resolve(hit.result);
+    }
+    return refresh();
+  };
+}
+
 /** `gh api graphql`, one call for all repositories, cached for ttlMs. Throws on failure with a short message. */
 export function createGhGraphql({ ttlMs = 60_000, timeoutMs = 25_000 }: { ttlMs?: number; timeoutMs?: number } = {}): GithubClient {
-  const cache = new Map<string, { at: number; result: GithubResult }>();
-  return (request) => {
+  const fetchGithub: GithubClient = (request) => new Promise((resolve, reject) => {
     const query = buildQuery(request);
-    const hit = cache.get(query);
-    if (hit && Date.now() - hit.at < ttlMs) return Promise.resolve(hit.result);
-    return new Promise((resolve, reject) => {
-      execFile('gh', ['api', 'graphql', '-f', `query=${query}`], { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
-        let body: { data?: unknown; errors?: { message: string }[] } | null = null;
-        try { body = JSON.parse(stdout); } catch { /* not JSON */ }
-        if (!body?.data) return reject(new Error(String(body?.errors?.[0]?.message ?? stderr ?? error?.message ?? 'no data').split('\n')[0].slice(0, 160)));
-        const result = parseResponse(request, body.data);
-        cache.set(query, { at: Date.now(), result });
-        resolve(result);
-      });
+    execFile('gh', ['api', 'graphql', '-f', `query=${query}`], { timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
+      let body: { data?: unknown; errors?: { message: string }[] } | null = null;
+      try { body = JSON.parse(stdout); } catch { /* not JSON */ }
+      if (!body?.data) return reject(new Error(String(body?.errors?.[0]?.message ?? stderr ?? error?.message ?? 'no data').split('\n')[0].slice(0, 160)));
+      resolve(parseResponse(request, body.data));
     });
-  };
+  });
+  return createStaleWhileRevalidate(fetchGithub, ttlMs);
 }

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac, createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, writeFile, cp, symlink, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, cp, symlink, rm, readdir, utimes } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
@@ -136,6 +136,11 @@ test('revision ingest creates a separate run once and leaves the parent run unch
     await writeFile(artifact, '# Agent revision\n');
     const event = { event_type: 'bragi.agent.revision_ready', event_id: 'a350fb95-b3eb-44b9-bda4-ec6aa700e885', workflow_id: 'workflow-1', parent_event_id: '8a4b38e1-15b2-42fb-a678-f0f7c25e9754', slug: 'story', editor_run: 'story/editor-run-v1', target_id: targetId, artifact_ref: 'writer/revision.md', sha256: hash(await readFile(artifact)), source_sha256: 'a'.repeat(64), label: 'Agent revision' };
     const before = await treeBytes(run);
+    const eventDir = path.join(drafts, '.bragi-ingest-events');
+    await mkdir(eventDir, { recursive: true });
+    const staleLock = path.join(eventDir, `event-${event.event_id}.lock`);
+    await writeFile(staleLock, '99999999:stale');
+    await utimes(staleLock, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
     const reordered = Object.fromEntries(Object.entries(event).reverse());
     const results = await Promise.all([
       ingestRevision(event, { draftsRoot: drafts, workflowRoot: tmp }),
@@ -157,6 +162,17 @@ test('revision ingest creates a separate run once and leaves the parent run unch
     const recovered = await ingestRevision(reordered, { draftsRoot: drafts, workflowRoot: tmp });
     assert.equal(recovered.created, false);
     assert.equal(recovered.runKey, first.runKey);
+    const staleSlugLock = path.join(eventDir, 'slug-story.lock');
+    await writeFile(staleSlugLock, '99999999:stale');
+    await utimes(staleSlugLock, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+    const distinctEvents = [
+      { ...event, event_id: '1ea41c2b-41e8-4d68-a835-2ac83e1390ac', label: 'Agent revision A' },
+      { ...event, event_id: 'da74cfe0-28ea-4a98-a6bc-e20edbd91ccf', label: 'Agent revision B' },
+    ];
+    const distinctResults = await Promise.all(distinctEvents.map(item => ingestRevision(item, { draftsRoot: drafts, workflowRoot: tmp })));
+    assert.ok(distinctResults.every(result => result.created));
+    assert.notEqual(distinctResults[0].runKey, distinctResults[1].runKey);
+    assert.deepEqual((await readdir(slugDir)).filter(name => /^editor-run-v/.test(name)).sort(), ['editor-run-v1', 'editor-run-v2', 'editor-run-v3', 'editor-run-v4']);
     assert.deepEqual(await treeBytes(run), before);
     const newRun = path.join(slugDir, 'editor-run-v2');
     assert.equal(await readFile(path.join(newRun, '05_final', 'agent-revision.md'), 'utf8'), '# Agent revision\n');

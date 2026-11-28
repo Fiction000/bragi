@@ -48,6 +48,36 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
+async function removeStaleLock(file, observed) {
+  const recoveryFile = `${file}.recovery`;
+  const token = `${process.pid}:${Math.random().toString(16).slice(2)}`;
+  let recovery;
+  try { recovery = await fs.open(recoveryFile, 'wx', 0o600); }
+  catch (error) { if (error.code === 'EEXIST') return false; throw error; }
+  try {
+    await recovery.writeFile(token);
+    let current;
+    try { current = await fs.lstat(file); }
+    catch (error) { if (error.code === 'ENOENT') return true; throw error; }
+    if (current.isSymbolicLink() || current.dev !== observed.dev || current.ino !== observed.ino) return false;
+    let stale = Date.now() - current.mtimeMs > 5_000;
+    try {
+      const pid = Number((await fs.readFile(file, 'utf8')).split(':')[0]);
+      if (Number.isInteger(pid) && pid > 0) {
+        try { process.kill(pid, 0); stale = false; }
+        catch (error) { stale = error.code === 'ESRCH'; }
+      }
+    } catch (error) { if (error.code !== 'ENOENT') stale = Date.now() - current.mtimeMs > 5_000; }
+    if (!stale) return false;
+    try { await fs.unlink(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return true;
+  } finally {
+    await recovery.close();
+    try { if (await fs.readFile(recoveryFile, 'utf8') === token) await fs.unlink(recoveryFile); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
+
 async function acquireLock(dir, name) {
   const file = path.join(dir, `${name}.lock`);
   const token = `${process.pid}:${Math.random().toString(16).slice(2)}`;
@@ -73,7 +103,9 @@ async function acquireLock(dir, name) {
         catch (error) { stale = error.code === 'ESRCH'; }
       }
     } catch (error) { if (error.code !== 'ENOENT') stale = Date.now() - info.mtimeMs > 5_000; }
-    if (stale) { await fs.rm(file, { force: true }); continue; }
+    if (stale) {
+      if (await removeStaleLock(file, info)) continue;
+    }
     await new Promise(resolve => setTimeout(resolve, 25));
   }
   throw new Error('Timed out waiting for revision ingest lock');

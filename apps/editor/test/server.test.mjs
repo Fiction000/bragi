@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, cp, readFile, writeFile, mkdir, symlink, rm, access } from 'node:fs/promises';
+import { mkdtemp, cp, readFile, writeFile, mkdir, symlink, rm, access, realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { createEditorServer, revisionFor } from '../server.mjs';
+import { createEditorServer, revisionFor, saveDraftIfCurrent } from '../server.mjs';
 
 const fixture = path.resolve('test/fixtures/run');
 async function setup() {
@@ -46,6 +46,20 @@ test('stale revision rejects without changing files', async () => {
     const stale = await t.api('/api/drafts/kawazoi', { method: 'PUT', body: json({ state: initial.state, baseRevision: initial.revision }) });
     assert.equal(stale.status, 409);
     assert.deepEqual(await Promise.all(['nat-final.md', 'nat-notes.json'].map(f => readFile(path.join(files, f)))), before);
+  } finally { await t.close(); }
+});
+
+test('review draft save refuses a stale revision without replacing a concurrent edit', async () => {
+  const t = await setup();
+  try {
+    const initial = await (await t.api('/api/drafts/kawazoi')).json();
+    const newerState = { markdown: initial.state.markdown + '\n別の節の編集', notes: [] };
+    assert.equal((await t.api('/api/drafts/kawazoi', { method: 'PUT', body: json({ state: newerState, baseRevision: initial.revision }) })).status, 200);
+    const latest = await (await t.api('/api/drafts/kawazoi')).json();
+    const target = { id: 'kawazoi', source: path.join(t.run, '05_final', '川沿いの帰り道 レビュー反映稿.md') };
+    const attempted = await saveDraftIfCurrent(await realpath(t.run), target, initial.state, initial.revision);
+    assert.deepEqual(attempted, { saved: false, revision: latest.revision });
+    assert.deepEqual((await (await t.api('/api/drafts/kawazoi')).json()).state, newerState);
   } finally { await t.close(); }
 });
 

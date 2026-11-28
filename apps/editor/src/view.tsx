@@ -4,9 +4,12 @@ import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
 import { Markdown } from '@tiptap/markdown';
 import { Extension, type Editor } from '@tiptap/core';
+import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { changedBlockIndices, randomUUID } from './model';
 import { apiBase as routeApiBase, setConfirmLeave } from './base';
 import { findReplacements, previewContext, replaceSelected } from './search-replace.mjs';
+import ReviewPanel from './review-panel';
 
 type Note = { id: string; anchor: { blockIndex: number; text: string }; body: string };
 type State = { markdown: string; notes: Note[] };
@@ -27,6 +30,57 @@ const reducer = (m: Model, e: Event): Model => {
 const statuses: Record<Save, string> = { clean: '保存済み', dirty: '', saving: '保存中…', saved: '保存済み', failed: '保存できませんでした', conflict: 'ファイルが別の場所で変更されました', backupFailed: '変更をこのMacに保持できませんでした' };
 const norm = (s: string) => s.replace(/\r\n?/g, '\n').replace(/[ \t]+\n/g, '\n').trim();
 const blocks = (s: string) => s.split(/\n\s*\n/).map(x => x.replace(/^#{1,6}\s+|^>\s?|^[-*+]\s+|^\d+\.\s+/gm, '').replace(/[*_`\[\]()]/g, '').trim()).filter(Boolean);
+type ReviewAnchor = { quote: string; sectionIndex: number; heading: string; hasPreface: boolean; number: number };
+const reviewAnchorKey = new PluginKey<DecorationSet>('reviewAnchors');
+const reviewAnchorMarker = Extension.create({
+  name: 'reviewAnchorMarker',
+  addProseMirrorPlugins() {
+    return [new Plugin<DecorationSet>({
+      key: reviewAnchorKey,
+      state: {
+        init: () => DecorationSet.empty,
+        apply: (transaction, decorations) => transaction.getMeta(reviewAnchorKey) ?? (transaction.docChanged ? decorations.map(transaction.mapping, transaction.doc) : decorations),
+      },
+      props: { decorations: state => reviewAnchorKey.getState(state) ?? DecorationSet.empty },
+    })];
+  },
+});
+const reviewAnchorDecorations = (doc: Editor['state']['doc'], anchors: ReviewAnchor[]) => {
+  const headings: { position: number }[] = [];
+  doc.forEach((node, position) => { if (node.type.name === 'heading') headings.push({ position }); });
+  const decorations = [];
+  for (const anchor of anchors) {
+    if (!anchor.quote) continue;
+    let start = 0, end = doc.content.size;
+    if (anchor.heading.startsWith('#')) {
+      const heading = headings[anchor.sectionIndex - (anchor.hasPreface ? 1 : 0)];
+      if (!heading) continue;
+      start = heading.position;
+      end = headings[anchor.sectionIndex - (anchor.hasPreface ? 1 : 0) + 1]?.position ?? doc.content.size;
+    } else if (anchor.hasPreface) end = headings[0]?.position ?? doc.content.size;
+    const matches: { from: number; to: number }[] = [];
+    doc.nodesBetween(start, end, (node, position) => {
+      if (!node.isTextblock) return;
+      let text = '';
+      const positions: number[] = [];
+      node.descendants((child, relative) => {
+        if (child.isText) {
+          for (let i = 0; i < child.text!.length; i++) { text += child.text![i]; positions.push(position + 1 + relative + i); }
+        } else if (child.type.name === 'hardBreak') { text += '\n'; positions.push(position + 1 + relative); }
+      });
+      let from = 0;
+      while ((from = text.indexOf(anchor.quote, from)) !== -1) {
+        const last = from + anchor.quote.length - 1;
+        if (positions[from] !== undefined && positions[last] !== undefined) matches.push({ from: positions[from], to: positions[last] + 1 });
+        from += anchor.quote.length;
+      }
+    });
+    if (matches.length !== 1) continue;
+    const badge = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩'][anchor.number - 1] ?? `#${anchor.number}`;
+    decorations.push(Decoration.widget(matches[0].to, () => { const element = document.createElement('span'); element.className = 'review-anchor-widget'; element.setAttribute('aria-label', `指摘 ${anchor.number}`); element.textContent = badge; return element; }, { side: 1, key: `review-anchor-${anchor.number}` }));
+  }
+  return DecorationSet.create(doc, decorations);
+};
 const changed = (a: string[], b: string[]) => { const d = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0)); for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) d[i][j] = a[i] === b[j] ? d[i + 1][j + 1] + 1 : Math.max(d[i + 1][j], d[i][j + 1]); return Math.max(a.length, b.length) - d[0][0]; };
 const changedMarker = Extension.create({
   name: 'changedMarker',
@@ -66,6 +120,8 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
   const [model, dispatch] = useReducer(reducer, { save: 'clean', finish: 'idle' });
   const shellRef = useRef<HTMLElement | null>(null);
   const [noteTops, setNoteTops] = useState<Record<string, number>>({});
+  const [reviewAnchors, setReviewAnchors] = useState<ReviewAnchor[]>([]);
+  const publishReviewAnchors = useCallback((anchors: ReviewAnchor[]) => setReviewAnchors(anchors), []);
   const [plusTops, setPlusTops] = useState<{ index: number; top: number }[]>([]);
   const [activeBlock, setActiveBlock] = useState(-1);
   const [readonly, setReadonly] = useState(false);
@@ -96,11 +152,13 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     return markdown.replace(/\n*$/, trailingNewlines.current);
   };
   const editor = useEditor({
-    extensions: [StarterKit, Link.configure({ openOnClick: false }), Markdown, changedMarker],
+    extensions: [StarterKit, Link.configure({ openOnClick: false }), Markdown, changedMarker, reviewAnchorMarker],
     content: '',
     onUpdate: ({ editor: e }) => { if (loading.current || e.view.composing) return; composing.current = false; const markdown = readEditorMarkdown(); if (bulkUndo.current !== undefined && markdown !== bulkUndoApplied.current) bulkUndo.current = undefined; markChanged(e, source, markdown); setDraft(s => ({ ...s, markdown })); dispatch({ type: 'edit' }); planSave(); },
     onSelectionUpdate: ({ editor: e }) => setSelected(e.state.doc.textBetween(e.state.selection.from, e.state.selection.to, ' ')),
   });
+  useEffect(() => { if (!editor) return; editor.view.dispatch(editor.state.tr.setMeta(reviewAnchorKey, reviewAnchorDecorations(editor.state.doc, reviewAnchors)).setMeta('addToHistory', false)); }, [editor, reviewAnchors, draft.markdown]);
+  useEffect(() => { setReviewAnchors([]); }, [target?.id]);
   const save = useCallback(async () => {
     const t = currentTarget.current;
     if (!t || readonlyRef.current || !['dirty', 'failed', 'conflict'].includes(status.current.save)) return status.current.save === 'saved' || status.current.save === 'clean';
@@ -256,10 +314,12 @@ export default function App({ onBack }: { onBack?: () => void } = {}) {
     {model.save === 'conflict' && <aside className="error"><strong>ファイルが別の場所で変更されました</strong><p>自分の変更はこのMacに保持されています。</p><button onClick={async () => { const r = await fetch(`${apiBase}/api/drafts/${target.id}/fork`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state: state.current }) }); if (r.ok) await openServerVersion(false); }}>自分の版を別に保存</button><button onClick={() => void openServerVersion(true)}>別の版を開く</button></aside>}
     {model.finish === 'finishFailed' && <aside className="error"><strong>完了を記録できませんでした</strong><button onClick={() => void finish()}>再試行</button></aside>}
     {model.finish === 'finished' ? <section className="completion"><h1>直し終えました</h1><p>編集版を保存しました。</p><p>元の原稿も残っています。</p><p>変更 {(state.current as State & { changedBlocks?: number }).changedBlocks ?? count}か所　理由 {draft.notes.length}件</p>{targets.find(x => !x.finished) && <article className="next"><h2>{targets.find(x => !x.finished)?.title}</h2><p>{targets.find(x => !x.finished)?.medium}・{targets.find(x => !x.finished)?.version}</p><button onClick={() => void switchTo(targets.find(x => !x.finished)!.id)}>次の原稿を開く</button></article>}</section> : <>
-      <section className="editor-shell" ref={shellRef}><EditorContent editor={editor} />
+      <div className="review-layout"><div className="review-editor"><section className="editor-shell" ref={shellRef}><EditorContent editor={editor} />
       <div className="plus-layer">{!readonly && plusTops.map(p => <button key={p.index} type="button" className={`add-note${p.index === activeBlock || p.index === caretBlock ? ' visible' : ''}`} style={{ top: p.top }} aria-label="理由を書く" onMouseDown={e => e.preventDefault()} onClick={() => addNote(p.index)}>＋</button>)}</div>
       <div className="notes-layer">{draft.notes.map(note => <label className="note" key={note.id} style={{ top: noteTops[note.id] ?? 0 }}><textarea data-note={note.id} aria-label="理由" value={note.body} onChange={e => updateNote(note.id, e.target.value)} onBlur={e => { if (!e.target.value.trim()) updateNote(note.id, ''); }} /></label>)}</div></section>
-      <div className="actions"><button disabled={readonly || model.finish === 'finishing'} onClick={() => void finish()}>直し終えた</button></div>
+      <div className="actions"><button disabled={readonly || model.finish === 'finishing'} onClick={() => void finish()}>直し終えた</button></div></div>
+      <ReviewPanel apiBase={apiBase} targetId={target.id} revision={base.current} markdown={draft.markdown} save={save} onAnchors={publishReviewAnchors} onApplied={(markdown, revision) => { base.current = revision; trailingNewlines.current = markdown.endsWith('\n') ? '\n' : ''; setDraft(s => ({ ...s, markdown })); editor.commands.setContent(markdown, { contentType: 'markdown', emitUpdate: false }); dispatch({ type: 'reset' }); }} />
+      </div>
     </>}
     {selected && !readonly && <div className="selection-tools"><button onMouseDown={e => e.preventDefault()} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}>見出し</button><button onMouseDown={e => e.preventDefault()} onClick={() => editor.chain().focus().toggleBold().run()}>太字</button><button onMouseDown={e => e.preventDefault()} onClick={() => editor.chain().focus().toggleBlockquote().run()}>引用</button><button onMouseDown={e => e.preventDefault()} onClick={() => { const href = prompt('リンク'); if (href) editor.chain().focus().setLink({ href }).run(); }}>リンク</button><button onMouseDown={e => e.preventDefault()} onClick={() => addNote(Math.max(0, editor.state.selection.$from.index(0)))}>理由</button></div>}
     {switcher && <div className="switcher-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setSwitcher(false); }}><section className="switcher" role="dialog" aria-modal="true" aria-label="原稿を開く　⌘O"><h2>原稿を開く　⌘O</h2>{targets.map((item, i) => <button key={item.id} autoFocus={i === 0} onKeyDown={e => { const all = [...e.currentTarget.parentElement!.querySelectorAll('button')]; if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); all[(i + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length].focus(); } if (e.key === 'Enter') void switchTo(item.id); }} onClick={() => void switchTo(item.id)}><span>{item.title}</span><small>{item.medium}・{item.version}</small></button>)}</section></div>}

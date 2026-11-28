@@ -16,6 +16,7 @@
     "@fontsource/noto-serif-jp": "^5.2.6",
     "@tiptap/extension-link": "^3.13.0",
     "@tiptap/markdown": "^3.13.0",
+    "@tiptap/pm": "^3.13.0",
     "@tiptap/react": "^3.13.0",
     "@tiptap/starter-kit": "^3.13.0",
     "react": "^19.1.0",
